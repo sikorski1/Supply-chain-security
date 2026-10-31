@@ -1,4 +1,4 @@
-module github.com/sikorski1/Supply-chain-security/services/api-gateway
+module github.com/sikorski1/Supply-chain-security/api-gateway
 
 go 1.22.0
 
