@@ -1,4 +1,4 @@
-package gateway
+package main
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/sikorski1/Supply-chain-security/services/api-gateway/internal/config"
+	"github.com/sikorski1/Supply-chain-security/api-gateway/internal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -164,14 +164,21 @@ func TestRouterDownUpstreamWhileHealthStaysUp(t *testing.T) {
 
 func newTestHandler(t *testing.T, ordersURL, inventoryURL string) http.Handler {
 	t.Helper()
-	handler, err := NewHandler(config.Config{
-		Port:                8080,
-		OrdersServiceURL:    ordersURL,
-		InventoryServiceURL: inventoryURL,
-		UpstreamTimeout:     2 * time.Second,
-	})
+
+	orders, err := internal.NewProxy(ordersURL, 2*time.Second)
 	require.NoError(t, err)
-	return handler
+	inventory, err := internal.NewProxy(inventoryURL, 2*time.Second)
+	require.NoError(t, err)
+
+	app := &application{
+		config: config{
+			addr:            ":8080",
+			upstreamTimeout: 2 * time.Second,
+		},
+		orders:    orders,
+		inventory: inventory,
+	}
+	return app.mount()
 }
 
 func newEchoServer(t *testing.T, service string) *httptest.Server {

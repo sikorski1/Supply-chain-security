@@ -1,8 +1,7 @@
-package gateway
+package internal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"time"
+
+	"github.com/sikorski1/Supply-chain-security/api-gateway/internal/json"
 )
 
 func NewProxy(rawURL string, timeout time.Duration) (*httputil.ReverseProxy, error) {
@@ -49,9 +50,7 @@ func NewProxy(rawURL string, timeout time.Duration) (*httputil.ReverseProxy, err
 			message = "upstream request timed out"
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(apiError{
+		json.Write(w, status, apiError{
 			Code:    code,
 			Message: message,
 		})

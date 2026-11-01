@@ -1,10 +1,9 @@
 module github.com/sikorski1/Supply-chain-security/api-gateway
 
-go 1.22.0
+go 1.27.3
 
 require (
-	github.com/caarlos0/env/v11 v11.3.1
-	github.com/go-chi/chi/v5 v5.2.1
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/go-cmp v0.7.0
 	github.com/stretchr/testify v1.10.0
 )

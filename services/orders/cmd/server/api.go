@@ -7,6 +7,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
+	"github.com/sikorski1/Supply-chain-security/services/orders/internal"
+	repository "github.com/sikorski1/Supply-chain-security/services/orders/internal/adapters/postgresql/sqlc"
 )
 
 // mount
@@ -24,6 +27,10 @@ func (app *application) mount() http.Handler {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("all good"))
 	})
+
+	ordersService := internal.NewService(repository.New(app.db))
+	ordersHandler := internal.NewHandler(ordersService)
+	r.Get("/orders", ordersHandler.GetOrders)
 
 
 	return r
@@ -47,7 +54,7 @@ func (app *application) run(h http.Handler) error {
 type application struct {
 	config config
 	// logger
-	// db driver
+	db *pgx.Conn
 }
 
 type config struct {

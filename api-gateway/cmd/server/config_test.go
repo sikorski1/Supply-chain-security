@@ -1,4 +1,4 @@
-package config
+package main
 
 import (
 	"os"
@@ -12,19 +12,18 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	unsetEnv(t, "PORT", "ORDERS_SERVICE_URL", "INVENTORY_SERVICE_URL", "UPSTREAM_TIMEOUT")
 
-	got, err := Load()
+	got, err := loadConfig()
 	require.NoError(t, err)
 
-	want := Config{
-		Port:                8080,
-		OrdersServiceURL:    "http://orders:8081",
-		InventoryServiceURL: "http://inventory:8082",
-		UpstreamTimeout:     15 * time.Second,
+	want := config{
+		addr:                ":8080",
+		ordersServiceURL:    "http://orders:8081",
+		inventoryServiceURL: "http://inventory:8082",
+		upstreamTimeout:     15 * time.Second,
 	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Fatalf("Load() mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(want, got, cmp.AllowUnexported(config{})); diff != "" {
+		t.Fatalf("loadConfig() mismatch (-want +got):\n%s", diff)
 	}
-	require.Equal(t, ":8080", got.Addr())
 }
 
 func TestLoadFromEnvironment(t *testing.T) {
@@ -33,19 +32,18 @@ func TestLoadFromEnvironment(t *testing.T) {
 	t.Setenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:8082")
 	t.Setenv("UPSTREAM_TIMEOUT", "3s")
 
-	got, err := Load()
+	got, err := loadConfig()
 	require.NoError(t, err)
 
-	want := Config{
-		Port:                9090,
-		OrdersServiceURL:    "https://orders.internal:8443",
-		InventoryServiceURL: "http://127.0.0.1:8082",
-		UpstreamTimeout:     3 * time.Second,
+	want := config{
+		addr:                ":9090",
+		ordersServiceURL:    "https://orders.internal:8443",
+		inventoryServiceURL: "http://127.0.0.1:8082",
+		upstreamTimeout:     3 * time.Second,
 	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Fatalf("Load() mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(want, got, cmp.AllowUnexported(config{})); diff != "" {
+		t.Fatalf("loadConfig() mismatch (-want +got):\n%s", diff)
 	}
-	require.Equal(t, ":9090", got.Addr())
 }
 
 func TestLoadRejectsInvalidConfiguration(t *testing.T) {
@@ -67,7 +65,7 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{
 			name:    "port not a number",
 			env:     map[string]string{"PORT": "http"},
-			message: "Port",
+			message: "PORT",
 		},
 		{
 			name:    "orders url missing scheme",
@@ -93,7 +91,7 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 				t.Setenv(key, value)
 			}
 
-			_, err := Load()
+			_, err := loadConfig()
 			require.ErrorContains(t, err, tt.message)
 		})
 	}
