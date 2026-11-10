@@ -11,6 +11,7 @@ import (
 )
 
 type Querier interface {
+	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	FindOrderById(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrders(ctx context.Context) ([]Order, error)
 }

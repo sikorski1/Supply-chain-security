@@ -12,40 +12,45 @@ import (
 	repository "github.com/sikorski1/Supply-chain-security/services/orders/internal/adapters/postgresql/sqlc"
 )
 
-// mount
-
 func (app *application) mount() http.Handler {
+	orders := internal.NewHandler(internal.NewService(repository.New(app.db)))
+	return newRouter(orders)
+}
+
+type ordersAPI interface {
+	GetOrders(http.ResponseWriter, *http.Request)
+	GetOrder(http.ResponseWriter, *http.Request)
+	CreateOrder(http.ResponseWriter, *http.Request)
+}
+
+func newRouter(orders ordersAPI) http.Handler {
 	r := chi.NewRouter()
 
-	r.Use(middleware.RequestID) // important for rate limiting
-  	r.Use(middleware.ClientIPFromRemoteAddr)  // important for rate limiting and analytics and tracing
-  	r.Use(middleware.Logger)
-  	r.Use(middleware.Recoverer) // recovery from crashes
+	r.Use(middleware.RequestID)              // important for rate limiting
+	r.Use(middleware.ClientIPFromRemoteAddr) // important for rate limiting and analytics and tracing
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer) // recovery from crashes
 
 	r.Use(middleware.Timeout(60 * time.Second))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("all good"))
+		_, _ = w.Write([]byte("all good"))
 	})
 
-	ordersService := internal.NewService(repository.New(app.db))
-	ordersHandler := internal.NewHandler(ordersService)
-	r.Get("/orders", ordersHandler.GetOrders)
-
+	r.Get("/api/orders", orders.GetOrders)
+	r.Get("/api/orders/{id}", orders.GetOrder)
+	r.Post("/api/orders", orders.CreateOrder)
 
 	return r
 }
 
-// run
-
 func (app *application) run(h http.Handler) error {
 	srv := &http.Server{
-		Addr: app.config.addr,
-		Handler: h,
+		Addr:         app.config.addr,
+		Handler:      h,
 		WriteTimeout: time.Second * 30,
-		ReadTimeout: time.Second * 10,
-		IdleTimeout: time.Minute,
-
+		ReadTimeout:  time.Second * 10,
+		IdleTimeout:  time.Minute,
 	}
 	log.Printf("Server has started at addr %s", app.config.addr)
 	return srv.ListenAndServe()
@@ -59,7 +64,7 @@ type application struct {
 
 type config struct {
 	addr string
-	db dbConfig
+	db   dbConfig
 }
 
 type dbConfig struct {

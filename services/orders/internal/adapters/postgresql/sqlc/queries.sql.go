@@ -11,6 +11,49 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createOrder = `-- name: CreateOrder :one
+INSERT INTO orders (
+    id,
+    product_id,
+    product_name,
+    quantity,
+    unit_price_cents
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+RETURNING id, product_id, product_name, quantity, unit_price_cents, status, created_at, updated_at
+`
+
+type CreateOrderParams struct {
+	ID             pgtype.UUID `json:"id"`
+	ProductID      pgtype.UUID `json:"product_id"`
+	ProductName    string      `json:"product_name"`
+	Quantity       int32       `json:"quantity"`
+	UnitPriceCents int32       `json:"unit_price_cents"`
+}
+
+func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error) {
+	row := q.db.QueryRow(ctx, createOrder,
+		arg.ID,
+		arg.ProductID,
+		arg.ProductName,
+		arg.Quantity,
+		arg.UnitPriceCents,
+	)
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.ProductName,
+		&i.Quantity,
+		&i.UnitPriceCents,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const findOrderById = `-- name: FindOrderById :one
 SELECT id, product_id, product_name, quantity, unit_price_cents, status, created_at, updated_at FROM orders WHERE id = $1
 `
@@ -33,6 +76,7 @@ func (q *Queries) FindOrderById(ctx context.Context, id pgtype.UUID) (Order, err
 
 const getOrders = `-- name: GetOrders :many
 SELECT id, product_id, product_name, quantity, unit_price_cents, status, created_at, updated_at FROM orders
+ORDER BY created_at DESC
 `
 
 func (q *Queries) GetOrders(ctx context.Context) ([]Order, error) {
