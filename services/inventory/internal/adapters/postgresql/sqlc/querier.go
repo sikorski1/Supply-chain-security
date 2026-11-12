@@ -4,6 +4,21 @@
 
 package repository
 
-type Querier interface{}
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+type Querier interface {
+	CreateReservation(ctx context.Context, arg CreateReservationParams) (Reservation, error)
+	FindProductById(ctx context.Context, id pgtype.UUID) (FindProductByIdRow, error)
+	FindProductForUpdate(ctx context.Context, id pgtype.UUID) (Product, error)
+	FindReservationByOrderId(ctx context.Context, orderID pgtype.UUID) (Reservation, error)
+	GetProducts(ctx context.Context) ([]GetProductsRow, error)
+	ReactivateReservation(ctx context.Context, arg ReactivateReservationParams) (Reservation, error)
+	ReleaseReservation(ctx context.Context, orderID pgtype.UUID) (Reservation, error)
+	SumActiveReservationQuantity(ctx context.Context, productID pgtype.UUID) (int32, error)
+}
 
 var _ Querier = (*Queries)(nil)

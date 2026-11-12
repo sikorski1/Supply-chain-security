@@ -9,17 +9,22 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/sikorski1/Supply-chain-security/services/inventory/internal"
-	repository "github.com/sikorski1/Supply-chain-security/services/inventory/internal/adapters/postgresql/sqlc"
+	"github.com/sikorski1/Supply-chain-security/services/inventory/internal/adapters/postgresql"
 )
 
 func (app *application) mount() http.Handler {
-	inventory := internal.NewHandler(internal.NewService(repository.New(app.db)))
+	inventory := internal.NewHandler(internal.NewService(postgresql.New(app.db)))
 	return newRouter(inventory)
 }
 
-type inventoryAPI interface{}
+type inventoryAPI interface {
+	GetProducts(http.ResponseWriter, *http.Request)
+	GetProduct(http.ResponseWriter, *http.Request)
+	CreateReservation(http.ResponseWriter, *http.Request)
+	ReleaseReservation(http.ResponseWriter, *http.Request)
+}
 
-func newRouter(_ inventoryAPI) http.Handler {
+func newRouter(inventory inventoryAPI) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)              // important for rate limiting
@@ -32,6 +37,11 @@ func newRouter(_ inventoryAPI) http.Handler {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("all good"))
 	})
+
+	r.Get("/api/products", inventory.GetProducts)
+	r.Get("/internal/products/{id}", inventory.GetProduct)
+	r.Post("/internal/reservations", inventory.CreateReservation)
+	r.Post("/internal/reservations/{orderId}/release", inventory.ReleaseReservation)
 
 	return r
 }

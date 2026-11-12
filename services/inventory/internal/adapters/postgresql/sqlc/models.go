@@ -14,3 +14,13 @@ type Product struct {
 	PriceCents    int32       `json:"price_cents"`
 	StockQuantity int32       `json:"stock_quantity"`
 }
+
+type Reservation struct {
+	ID        pgtype.UUID        `json:"id"`
+	OrderID   pgtype.UUID        `json:"order_id"`
+	ProductID pgtype.UUID        `json:"product_id"`
+	Quantity  int32              `json:"quantity"`
+	Status    string             `json:"status"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
