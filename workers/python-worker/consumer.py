@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import psycopg
-from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
+from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, RetentionPolicy
 from nats.js.errors import BadRequestError, NotFoundError
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ def parse_event(subject: str, data: bytes, *, fallback_time: datetime | None = N
 
     try:
         body = json.loads(data)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise InvalidEvent("payload is not json") from exc
     if not isinstance(body, dict):
         raise InvalidEvent("payload must be a json object")
@@ -51,18 +51,29 @@ def parse_event(subject: str, data: bytes, *, fallback_time: datetime | None = N
 
 async def ensure_stream(js) -> None:
     try:
-        await js.stream_info(STREAM)
-        return
+        info = await js.stream_info(STREAM)
     except NotFoundError:
-        pass
-
-    try:
-        await js.add_stream(name=STREAM, subjects=["orders.*"])
-    except BadRequestError:
-        await js.stream_info(STREAM)
+        try:
+            info = await js.add_stream(
+                name=STREAM, subjects=["orders.>"], retention=RetentionPolicy.LIMITS
+            )
+        except BadRequestError:
+            info = await js.stream_info(STREAM)
+    if info.config.retention != RetentionPolicy.LIMITS or not any(
+        subject in ("orders.>", "orders.*") for subject in info.config.subjects
+    ):
+        raise ValueError("ORDERS must capture orders.* with limits retention")
 
 
 async def subscribe(js):
+    try:
+        info = await js.consumer_info(STREAM, DURABLE)
+    except NotFoundError:
+        pass
+    else:
+        filters = info.config.filter_subjects or [info.config.filter_subject]
+        if info.config.ack_policy != AckPolicy.EXPLICIT or set(filters) != set(SUBJECTS):
+            raise ValueError("analytics durable must use expected subjects and explicit acknowledgements")
     return await js.pull_subscribe(
         SUBJECTS[0],
         durable=DURABLE,
@@ -86,21 +97,17 @@ async def handle_message(message, save) -> bool | None:
 
     try:
         inserted = await asyncio.to_thread(save, event)
-    except psycopg.OperationalError:
+    except (psycopg.DataError, psycopg.IntegrityError):
+        logger.exception("discarding invalid database row event_id=%s", event.event_id)
+        await message.term()
+        return None
+    except psycopg.Error:
         logger.exception("failed to store order event event_id=%s", event.event_id)
         try:
-            await message.nak()
+            await message.nak(delay=1)
         except Exception:
             logger.exception("failed to nak message")
         raise
-    except psycopg.Error:
-        logger.exception("discarding order event that cannot be stored event_id=%s", event.event_id)
-        try:
-            await message.term()
-        except Exception:
-            logger.exception("failed to terminate message")
-        return None
-
     await message.ack()
     if inserted:
         logger.info(

@@ -124,6 +124,11 @@ func (h *handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) writeServiceError(w http.ResponseWriter, err error) {
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		writeError(w, upstream.Status, upstream.Code, upstream.Message)
+		return
+	}
 	var validation *ValidationError
 	if errors.As(err, &validation) {
 		writeError(w, http.StatusBadRequest, "invalid_request", validation.Error())

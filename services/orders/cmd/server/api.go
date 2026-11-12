@@ -1,20 +1,33 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sikorski1/Supply-chain-security/services/orders/internal"
+	"github.com/sikorski1/Supply-chain-security/services/orders/internal/adapters/postgresql"
 	repository "github.com/sikorski1/Supply-chain-security/services/orders/internal/adapters/postgresql/sqlc"
 )
 
 func (app *application) mount() http.Handler {
-	orders := internal.NewHandler(internal.NewService(repository.New(app.db)))
-	return newRouter(orders)
+	orders := internal.NewHandler(internal.NewWorkflow(internal.NewService(repository.New(app.db)), postgresql.New(app.db), app.inventoryURL, app.paymentsURL, app.publisher))
+	router := newRouter(orders)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" && r.Method == http.MethodGet {
+			ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+			defer cancel()
+			if err := app.db.Ping(ctx); err != nil {
+				http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		router.ServeHTTP(w, r)
+	})
 }
 
 type ordersAPI interface {
@@ -44,7 +57,7 @@ func newRouter(orders ordersAPI) http.Handler {
 	return r
 }
 
-func (app *application) run(h http.Handler) error {
+func (app *application) run(ctx context.Context, h http.Handler) error {
 	srv := &http.Server{
 		Addr:         app.config.addr,
 		Handler:      h,
@@ -53,13 +66,34 @@ func (app *application) run(h http.Handler) error {
 		IdleTimeout:  time.Minute,
 	}
 	log.Printf("Server has started at addr %s", app.config.addr)
-	return srv.ListenAndServe()
+	done := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+		case <-done:
+			return
+		}
+		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdown); err != nil {
+			_ = srv.Close()
+		}
+	}()
+	err := srv.ListenAndServe()
+	close(done)
+	<-shutdownDone
+	return err
 }
 
 type application struct {
-	config config
+	config       config
+	publisher    internal.Publisher
+	inventoryURL string
+	paymentsURL  string
 	// logger
-	db *pgx.Conn
+	db *pgxpool.Pool
 }
 
 type config struct {

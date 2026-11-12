@@ -106,7 +106,9 @@ async def _redelivery():
             await handle_message(message, save)
 
         message = await _fetch_one(sub)
-        assert await handle_message(message, save) is True
+        # A running analytics worker may have already persisted the same event.
+        # Redelivery must still retry this writer, acknowledge, and leave one row.
+        await handle_message(message, save)
         assert attempts["count"] == 2
         count = conn.execute(
             "SELECT count(*) FROM order_events WHERE event_id = %s",

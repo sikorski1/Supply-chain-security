@@ -14,7 +14,7 @@ export type Delivery = {
   subject: string
   data: Uint8Array
   ack: () => void
-  nak: () => void
+  nak: (delay?: number) => void
   term: (reason?: string) => void
 }
 
@@ -66,7 +66,7 @@ export async function handleDelivery(
     }
 
     console.error('notification event will be retried', error)
-    delivery.nak()
+    delivery.nak(1000)
   }
 }
 

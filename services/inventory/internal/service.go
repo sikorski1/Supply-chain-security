@@ -209,6 +209,10 @@ func (s *svc) ReleaseReservation(ctx context.Context, orderID pgtype.UUID) (repo
 		}
 
 		updated, err := q.ReleaseReservation(ctx, orderID)
+        if errors.Is(err, pgx.ErrNoRows) {
+            // Another release can finish while this transaction waits for the product lock.
+            updated, err = q.FindReservationByOrderId(ctx, orderID)
+        }
 		if err != nil {
 			return err
 		}

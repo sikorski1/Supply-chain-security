@@ -28,7 +28,6 @@ func (app *application) mount() http.Handler {
 	r.Get("/api/orders", h.Orders)
 	r.Get("/api/orders/{id}", h.Orders)
 	r.Post("/api/orders", h.Orders)
-	r.Get("/api/stats", h.Orders)
 
 	r.NotFound(h.NotFound)
 	r.MethodNotAllowed(h.MethodNotAllowed)

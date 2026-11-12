@@ -1,3 +1,12 @@
+x-database: &database
+  GOOSE_DB_STRING: postgresql://app:app@postgres:5432/supply_chain?sslmode=disable
+
+x-http-health: &http-health
+  interval: 5s
+  timeout: 3s
+  retries: 12
+  start_period: 10s
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -5,8 +14,6 @@ services:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: supply_chain
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -14,26 +21,119 @@ services:
       interval: 2s
       timeout: 5s
       retries: 20
+    restart: unless-stopped
 
   nats:
     image: nats:2.11-alpine
-    command: ["-js", "-sd", "/data"]
-    ports:
-      - "127.0.0.1:4222:4222"
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     volumes:
       - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
 
-  analytics:
-    build:
-      context: ../workers/python-worker
+  inventory:
+    stop_grace_period: 20s
+    build: ../services/inventory
     environment:
-      GOOSE_DB_STRING: host=postgres user=app password=app dbname=supply_chain sslmode=disable
+      <<: *database
+      ADDR: :8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      <<: *http-health
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/health"]
+    restart: unless-stopped
+
+  payments:
+    stop_grace_period: 20s
+    build: ../services/payments
+    environment:
+      <<: *database
+      ADDR: :8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      <<: *http-health
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8083/health"]
+    restart: unless-stopped
+
+  orders:
+    stop_grace_period: 20s
+    build: ../services/orders
+    environment:
+      <<: *database
+      ADDR: :8081
+      INVENTORY_SERVICE_URL: http://inventory:8082
+      PAYMENTS_SERVICE_URL: http://payments:8083
       NATS_URL: nats://nats:4222
     depends_on:
       postgres:
         condition: service_healthy
       nats:
-        condition: service_started
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
+    healthcheck:
+      <<: *http-health
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/health"]
+    restart: unless-stopped
+
+  api-gateway:
+    build: ../api-gateway
+    environment:
+      PORT: "8080"
+      ORDERS_SERVICE_URL: http://orders:8081
+      INVENTORY_SERVICE_URL: http://inventory:8082
+      UPSTREAM_TIMEOUT: 25s
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      orders:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+    healthcheck:
+      <<: *http-health
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+    restart: unless-stopped
+
+  notifications:
+    build: ../workers/notifications
+    environment:
+      <<: *database
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      <<: *http-health
+      test: ["CMD", "node", "dist/health.js"]
+    restart: unless-stopped
+
+  analytics:
+    build: ../workers/python-worker
+    environment:
+      <<: *database
+      NATS_URL: nats://nats:4222
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      <<: *http-health
+      test: ["CMD", "python", "health.py"]
     restart: unless-stopped
 
 volumes:

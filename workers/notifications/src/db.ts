@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Pool } from "../node_modules/@types/pg/index.js";
+import { Pool } from "pg";
 import type { Notification } from "./notifications.js";
 
-const defaultDsn = "host=localhost user=app password=app dbname=supply_chain sslmode=disable";
+const defaultDsn = "postgresql://app:app@localhost:5432/supply_chain?sslmode=disable";
 
 export type Sql = {
 	query: (text: string, values?: unknown[]) => Promise<{ rowCount: number | null }>;

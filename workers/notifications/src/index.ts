@@ -1,4 +1,4 @@
-import { AckPolicy, DeliverPolicy, connect, type JetStreamManager } from 'nats'
+import { AckPolicy, DeliverPolicy, RetentionPolicy, connect, type JetStreamManager } from 'nats'
 import { createDb, ensureSchema, insertNotification, type Database } from './db.js'
 import { SUBJECTS, handleDelivery } from './notifications.js'
 
@@ -46,18 +46,31 @@ async function ensureStream(manager: JetStreamManager): Promise<void> {
     await manager.streams.info(streamName)
   } catch (error) {
     if (!isMissing(error)) throw error
-    await manager.streams.add({
-      name: streamName,
-      subjects: ['orders.>'],
-    })
+    try {
+      await manager.streams.add({
+        name: streamName,
+        subjects: ['orders.>'],
+        retention: RetentionPolicy.Limits,
+      })
+    } catch {
+      // Orders or Analytics may have created the stream concurrently.
+      await manager.streams.info(streamName)
+    }
+  }
+  const info = await manager.streams.info(streamName)
+  if (info.config.retention !== RetentionPolicy.Limits ||
+      !info.config.subjects?.some(subject => subject === 'orders.>' || subject === 'orders.*')) {
+    throw new Error('ORDERS must capture orders.* with limits retention')
   }
 }
 
 async function ensureConsumer(manager: JetStreamManager): Promise<void> {
   try {
     const info = await manager.consumers.info(streamName, consumerName)
-    if (info.config.ack_policy !== AckPolicy.Explicit) {
-      throw new Error(`consumer ${consumerName} must acknowledge messages explicitly`)
+    const filters = info.config.filter_subjects ?? [info.config.filter_subject ?? '']
+    if (info.config.ack_policy !== AckPolicy.Explicit ||
+        [...filters].sort().join(',') !== [...SUBJECTS].sort().join(',')) {
+      throw new Error(`consumer ${consumerName} must use the expected subjects and explicit acknowledgements`)
     }
   } catch (error) {
     if (!isMissing(error)) throw error

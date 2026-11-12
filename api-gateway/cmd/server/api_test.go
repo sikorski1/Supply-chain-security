@@ -79,16 +79,6 @@ func TestRouterRoutesFrontendEndpoints(t *testing.T) {
 			},
 			status: http.StatusCreated,
 		},
-		{
-			name:   "stats go to orders",
-			method: http.MethodGet,
-			target: "/api/stats",
-			want: upstreamEcho{
-				Service: "orders",
-				Method:  http.MethodGet,
-				Path:    "/api/stats",
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -202,4 +192,13 @@ func newEchoServer(t *testing.T, service string) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+func TestRouterDoesNotExposeInternalOrStatsEndpoints(t *testing.T) {
+	handler := newTestHandler(t, "http://127.0.0.1:1", "http://127.0.0.1:1")
+	for _, path := range []string{"/api/stats", "/internal/products/product-1", "/internal/reservations", "/internal/payments"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusNotFound, rec.Code, path)
+	}
 }

@@ -181,3 +181,20 @@ def test_missing_occurred_at_uses_jetstream_timestamp():
 
     assert seen[0].occurred_at == WHEN
     assert message.actions == ["ack"]
+
+
+def test_schema_error_is_retried():
+    message = FakeMessage("orders.created", payload())
+    def save(event):
+        raise psycopg.ProgrammingError("table temporarily missing")
+    try:
+        asyncio.run(handle_message(message, save))
+    except psycopg.Error:
+        pass
+    assert message.actions == ["nak"]
+
+
+def test_invalid_utf8_is_terminated():
+    message = FakeMessage("orders.created", b"\xff")
+    asyncio.run(handle_message(message, lambda event: True))
+    assert message.actions == ["term"]
