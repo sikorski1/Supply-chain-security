@@ -1,0 +1,1 @@
+-- Named queries for the inventory endpoints go here.
