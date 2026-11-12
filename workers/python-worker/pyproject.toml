@@ -1,0 +1,20 @@
+[project]
+name = "analytics"
+version = "0.1.0"
+description = "Consumes order events from NATS and stores them in PostgreSQL"
+requires-python = ">=3.12"
+dependencies = [
+    "nats-py>=2.16.0",
+    "psycopg[binary]>=3.3.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

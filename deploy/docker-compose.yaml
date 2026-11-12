@@ -9,6 +9,33 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d supply_chain"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "127.0.0.1:4222:4222"
+    volumes:
+      - nats_data:/data
+
+  analytics:
+    build:
+      context: ../workers/python-worker
+    environment:
+      GOOSE_DB_STRING: host=postgres user=app password=app dbname=supply_chain sslmode=disable
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  nats_data:
