@@ -26,6 +26,107 @@ The verification stack is left running as project `supply-chain-review`. Another
 
 Gateway binds loopback port 8080. The frontend binds loopback port 3000 and proxies `/api` to the gateway, so the dashboard is at `http://127.0.0.1:3000`. PostgreSQL, NATS, and internal service endpoints are available inside the Compose network. Loopback addresses in health checks refer to the checked container itself. The database URL is `postgresql://app:app@postgres:5432/supply_chain?sslmode=disable`; the broker URL is `nats://nats:4222`.
 
+## Benchmark registry
+
+The registry runs as a separate Compose project so application restarts and resets
+do not stop it. From the repository root:
+
+```bash
+docker compose -p benchmark-infra -f deploy/compose.benchmark.yaml config --quiet
+docker compose -p benchmark-infra -f deploy/compose.benchmark.yaml up -d --wait --wait-timeout 60
+curl --fail http://127.0.0.1:5001/v2/
+docker compose -p benchmark-infra -f deploy/compose.benchmark.yaml ps
+
+# Stop the registry while preserving its stored images and security artifacts.
+docker compose -p benchmark-infra -f deploy/compose.benchmark.yaml down
+```
+
+The registry image is pinned by digest. Its storage is the named volume
+`benchmark-infra_registry_data`, mounted at `/var/lib/registry`. Keep the project
+name consistent. If a manually started container already occupies port 5001,
+stop it before starting this Compose project; its existing storage is not migrated.
+
+Host clients can push and pull images using names such as
+`localhost:5001/orders:<run-id>`. Use `localhost:5001` consistently in image names;
+the kind configuration below maps that exact name. This is a local HTTP registry
+without authentication. Containerized runners need their own reachable registry
+address and appropriate HTTP registry configuration; their loopback addresses
+refer to themselves.
+
+Use the same registry for L0–L5 and start it before measured pipeline execution.
+Measure image and security-artifact uploads in their respective stages. Record
+whether registry storage is reused or reset between runs: existing blobs can
+reduce upload time even with a new tag. Normal `down` preserves storage;
+`down --volumes` deletes this project's registry data and is only appropriate for
+an intentional reset. Signing and attestation integration still need end-to-end
+verification before the main experiment.
+
+## kind cluster with the local registry
+
+This follows the networking and containerd configuration from the
+[official kind local registry guide](https://kind.sigs.k8s.io/docs/user/local-registry/),
+while Compose retains ownership of the registry and its persistent storage.
+Prerequisites are Bash, Docker Engine, Docker Compose v2 or newer, kind, and kubectl.
+The setup uses the Docker provider, one control-plane node, and a digest-pinned
+Kubernetes v1.37.0 node image. The node image is selected in `setup-kind.sh` and
+the topology is defined in `kind.yaml`. The initial verified kind version is
+v0.33.0; keep CLI versions fixed during the experiment.
+
+From the repository root:
+
+```bash
+bash deploy/setup-kind.sh
+kubectl --context kind-benchmark get nodes
+kubectl --context kind-benchmark -n kube-public get configmap local-registry-hosting -o yaml
+
+# Optional integration check: push an image and run it in Kubernetes.
+bash deploy/verify-kind-registry.sh
+```
+
+Setup creates or reuses the `benchmark` cluster, starts the Compose registry,
+connects it to the `kind` Docker network, and writes
+`/etc/containerd/certs.d/localhost:5001/hosts.toml` on every node. The public image
+name maps to `http://benchmark-infra-registry-1:5000` inside that network. A
+`local-registry-hosting` ConfigMap advertises the public address in `kube-public`.
+Setup exports kubeconfig and selects `kind-benchmark` as the current context;
+its Kubernetes commands also target that context explicitly.
+
+Rerunning setup preserves the cluster and stored images. Run it again after
+recreating the registry container to restore its network attachment. An existing
+cluster with a different node image is rejected; topology changes require an
+explicit cluster recreation. Processes running inside Pods do not inherit
+containerd's registry mapping and need separate connectivity when accessing the
+registry directly.
+
+The integration check uses the pinned registry image as a small executable
+workload, pushes it as `localhost:5001/registry-smoke:check`, and runs a Pod with
+`imagePullPolicy: Always`. It verifies successful execution and removes its
+temporary namespace. It does not use `kind load`. The smoke image remains in
+registry storage and node caches, so this check is outside measurement and does
+not establish a cold-cache benchmark environment.
+
+To intentionally recreate the cluster and registry while preserving stored images:
+
+```bash
+kind delete cluster --name benchmark
+docker compose -p benchmark-infra -f deploy/compose.benchmark.yaml down
+bash deploy/setup-kind.sh
+```
+
+This removes Kubernetes workloads and cluster state while preserving registry
+contents, Docker's host image/build caches, and unrelated containers. Adding
+`--volumes` to the registry `down` command also permanently deletes its stored
+images and security artifacts; use that only for an intentional data reset.
+Application Compose projects have separate lifecycles and can be stopped
+independently. This bootstrap provisions infrastructure only; application
+Kubernetes manifests and the L0–L5 pipeline remain separate work.
+
+Verified on 2026-11-14 with kind v0.33.0, Docker Engine 29.5.2, and Compose 5.1.4:
+new-cluster bootstrap, registry health, host image push, Kubernetes pull and Pod
+execution, setup rerun from outside the repository without replacing resources,
+and registry-container recreation with image persistence and network reattachment.
+The integration check passed both before and after registry recreation.
+
 ## Service configuration and behavior
 
 | Service | Internal address | Persistence |
