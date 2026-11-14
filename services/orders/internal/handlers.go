@@ -31,6 +31,14 @@ type orderResponse struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
+type orderStatsResponse struct {
+	TotalOrders      int32 `json:"totalOrders"`
+	PendingOrders    int32 `json:"pendingOrders"`
+	ProcessingOrders int32 `json:"processingOrders"`
+	CompletedOrders  int32 `json:"completedOrders"`
+	FailedOrders     int32 `json:"failedOrders"`
+}
+
 type createOrderRequest struct {
 	ProductID      string `json:"productId"`
 	ProductName    string `json:"productName"`
@@ -66,6 +74,22 @@ func (h *handler) GetOrders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.Write(w, http.StatusOK, response)
+}
+
+func (h *handler) GetStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.service.GetOrderStats(r.Context())
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+
+	json.Write(w, http.StatusOK, orderStatsResponse{
+		TotalOrders:      stats.TotalOrders,
+		PendingOrders:    stats.PendingOrders,
+		ProcessingOrders: stats.ProcessingOrders,
+		CompletedOrders:  stats.CompletedOrders,
+		FailedOrders:     stats.FailedOrders,
+	})
 }
 
 func (h *handler) GetOrder(w http.ResponseWriter, r *http.Request) {

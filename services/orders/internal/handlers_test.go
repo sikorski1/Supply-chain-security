@@ -38,6 +38,30 @@ func TestOrdersEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("stats", func(t *testing.T) {
+		rec := serve(t, &fakeService{stats: repository.GetOrderStatsRow{
+			TotalOrders:      4,
+			PendingOrders:    1,
+			ProcessingOrders: 1,
+			CompletedOrders:  1,
+			FailedOrders:     1,
+		}}, http.MethodGet, "/api/stats", "")
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var got orderStatsResponse
+		decodeResponse(t, rec, &got)
+		if got != (orderStatsResponse{TotalOrders: 4, PendingOrders: 1, ProcessingOrders: 1, CompletedOrders: 1, FailedOrders: 1}) {
+			t.Fatalf("stats = %+v", got)
+		}
+	})
+
+	t.Run("stats database error stays generic", func(t *testing.T) {
+		rec := serve(t, &fakeService{err: errors.New("connection refused")}, http.MethodGet, "/api/stats", "")
+		assertAPIError(t, rec, http.StatusInternalServerError, "internal_error", "internal error")
+	})
+
 	t.Run("empty list", func(t *testing.T) {
 		rec := serve(t, &fakeService{}, http.MethodGet, "/api/orders", "")
 
@@ -125,6 +149,7 @@ func serve(t *testing.T, service Service, method, target, body string) *httptest
 	router := chi.NewRouter()
 	router.Get("/api/orders", handler.GetOrders)
 	router.Get("/api/orders/{id}", handler.GetOrder)
+	router.Get("/api/stats", handler.GetStats)
 	router.Post("/api/orders", handler.CreateOrder)
 
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
@@ -155,6 +180,7 @@ func assertAPIError(t *testing.T, rec *httptest.ResponseRecorder, status int, co
 type fakeService struct {
 	orders []repository.Order
 	order  repository.Order
+	stats  repository.GetOrderStatsRow
 	err    error
 	gotID  pgtype.UUID
 	input  CreateOrderInput
@@ -166,6 +192,13 @@ func (f *fakeService) GetOrders(context.Context) ([]repository.Order, error) {
 		return nil, f.err
 	}
 	return f.orders, nil
+}
+
+func (f *fakeService) GetOrderStats(context.Context) (repository.GetOrderStatsRow, error) {
+	if f.err != nil {
+		return repository.GetOrderStatsRow{}, f.err
+	}
+	return f.stats, nil
 }
 
 func (f *fakeService) GetOrder(_ context.Context, id pgtype.UUID) (repository.Order, error) {

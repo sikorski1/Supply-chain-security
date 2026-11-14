@@ -3,7 +3,7 @@
 Run from the repository root with Docker Engine and Docker Compose v2 or newer.
 
 ```bash
-# Validate and build all six backend images.
+# Validate and build the backend and frontend images.
 docker compose -p supply-chain-review -f deploy/docker-compose.yaml config --quiet
 docker compose -p supply-chain-review -f deploy/docker-compose.yaml build
 
@@ -22,24 +22,25 @@ docker compose -p supply-chain-review -f deploy/docker-compose.yaml exec -T anal
 docker compose -p supply-chain-review -f deploy/docker-compose.yaml down
 ```
 
-The verification stack is left running as project `supply-chain-review`. Another project name can be passed with `-p`; use the same name for every command. To change the host port, set `GATEWAY_PORT`, for example `GATEWAY_PORT=18080 docker compose ... up --build -d --wait`. The project name also scopes its PostgreSQL and NATS volumes. Default credentials `app/app` are for this local benchmark stack.
+The verification stack is left running as project `supply-chain-review`. Another project name can be passed with `-p`; use the same name for every command. To change the host ports, set `GATEWAY_PORT` and `FRONTEND_PORT`, for example `GATEWAY_PORT=18080 FRONTEND_PORT=13000 docker compose ... up --build -d --wait`. The project name also scopes its PostgreSQL and NATS volumes. Default credentials `app/app` are for this local benchmark stack.
 
-Only Gateway binds a host port, on loopback port 8080. PostgreSQL, NATS, and internal service endpoints are available inside the Compose network. Loopback addresses in health checks refer to the checked container itself. The database URL is `postgresql://app:app@postgres:5432/supply_chain?sslmode=disable`; the broker URL is `nats://nats:4222`.
+Gateway binds loopback port 8080. The frontend binds loopback port 3000 and proxies `/api` to the gateway, so the dashboard is at `http://127.0.0.1:3000`. PostgreSQL, NATS, and internal service endpoints are available inside the Compose network. Loopback addresses in health checks refer to the checked container itself. The database URL is `postgresql://app:app@postgres:5432/supply_chain?sslmode=disable`; the broker URL is `nats://nats:4222`.
 
 ## Service configuration and behavior
 
 | Service | Internal address | Persistence |
 | --- | --- | --- |
 | API Gateway | `api-gateway:8080` | None |
+| Frontend | `frontend:8080` | None |
 | Orders | `orders:8081` | `orders`; `orders_goose_db_version` |
 | Inventory | `inventory:8082` | `products`, `reservations`; `inventory_goose_db_version` |
 | Payments | `payments:8083` | `payments`; `payments_goose_db_version` |
 | Notifications, Node.js | No HTTP listener | `notifications`, unique `event_id` |
 | Analytics, Python | No HTTP listener | `order_events`, primary key `event_id` |
 
-The three Go services use pgx connection pools. Each embeds and applies its own Goose SQL migrations before serving HTTP, using a distinct history table so migration version 1 in one service cannot suppress another service's migration. The workers retain their existing idempotent, owned schema initialization. All six application images build from their own service directories. Go builds and dependency installs use pinned versions or lockfiles; Node runtime receives production dependencies and compiled JavaScript. Runtime applications run as non-root users.
+The three Go services use pgx connection pools. Each embeds and applies its own Goose SQL migrations before serving HTTP, using a distinct history table so migration version 1 in one service cannot suppress another service's migration. The workers retain their existing idempotent, owned schema initialization. Each application image builds from its own service directory. The frontend image serves the production build and proxies API requests to the gateway. Go builds and dependency installs use pinned versions or lockfiles; Node runtime receives production dependencies and compiled JavaScript. Runtime applications run as non-root users.
 
-Gateway forwards only GET products and GET/POST orders, including order detail. Internal product lookup, reservation/release, and payment routes remain private. `/api/stats` returns 404.
+Gateway forwards GET products, GET order statistics, and GET/POST orders, including order detail. Internal product lookup, reservation/release, and payment routes remain private.
 
 Order creation keeps the existing request fields and response shape. Inventory supplies the authoritative name and price. Orders stores the pending order, publishes `orders.created`, moves it to processing, reserves stock by order ID, calls Payments with the calculated total, records the final status, and publishes `orders.completed` or `orders.failed`. Free products complete without sending an invalid zero amount to Payments. Inventory retains its existing availability calculation: physical stock minus active reservations. Successful orders keep active reservations; confirmed failures release them. Repeated payment and reservation requests use unique order IDs, and repeated releases are idempotent, including concurrent calls.
 

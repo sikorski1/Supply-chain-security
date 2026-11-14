@@ -74,6 +74,37 @@ func (q *Queries) FindOrderById(ctx context.Context, id pgtype.UUID) (Order, err
 	return i, err
 }
 
+const getOrderStats = `-- name: GetOrderStats :one
+SELECT
+    COUNT(*)::int AS total_orders,
+    COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_orders,
+    COUNT(*) FILTER (WHERE status = 'processing')::int AS processing_orders,
+    COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_orders,
+    COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_orders
+FROM orders
+`
+
+type GetOrderStatsRow struct {
+	TotalOrders      int32 `json:"total_orders"`
+	PendingOrders    int32 `json:"pending_orders"`
+	ProcessingOrders int32 `json:"processing_orders"`
+	CompletedOrders  int32 `json:"completed_orders"`
+	FailedOrders     int32 `json:"failed_orders"`
+}
+
+func (q *Queries) GetOrderStats(ctx context.Context) (GetOrderStatsRow, error) {
+	row := q.db.QueryRow(ctx, getOrderStats)
+	var i GetOrderStatsRow
+	err := row.Scan(
+		&i.TotalOrders,
+		&i.PendingOrders,
+		&i.ProcessingOrders,
+		&i.CompletedOrders,
+		&i.FailedOrders,
+	)
+	return i, err
+}
+
 const getOrders = `-- name: GetOrders :many
 SELECT id, product_id, product_name, quantity, unit_price_cents, status, created_at, updated_at FROM orders
 ORDER BY created_at DESC

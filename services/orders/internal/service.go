@@ -32,6 +32,7 @@ type CreateOrderInput struct {
 type Service interface {
 	GetOrders(ctx context.Context) ([]repository.Order, error)
 	GetOrder(ctx context.Context, id pgtype.UUID) (repository.Order, error)
+	GetOrderStats(ctx context.Context) (repository.GetOrderStatsRow, error)
 	CreateOrder(ctx context.Context, input CreateOrderInput) (repository.Order, error)
 }
 
@@ -54,6 +55,10 @@ func (s *svc) GetOrders(ctx context.Context) ([]repository.Order, error) {
 		return []repository.Order{}, nil
 	}
 	return orders, nil
+}
+
+func (s *svc) GetOrderStats(ctx context.Context) (repository.GetOrderStatsRow, error) {
+	return s.repository.GetOrderStats(ctx)
 }
 
 func (s *svc) GetOrder(ctx context.Context, id pgtype.UUID) (repository.Order, error) {

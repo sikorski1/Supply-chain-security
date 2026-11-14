@@ -33,6 +33,7 @@ func (app *application) mount() http.Handler {
 type ordersAPI interface {
 	GetOrders(http.ResponseWriter, *http.Request)
 	GetOrder(http.ResponseWriter, *http.Request)
+	GetStats(http.ResponseWriter, *http.Request)
 	CreateOrder(http.ResponseWriter, *http.Request)
 }
 
@@ -52,6 +53,7 @@ func newRouter(orders ordersAPI) http.Handler {
 
 	r.Get("/api/orders", orders.GetOrders)
 	r.Get("/api/orders/{id}", orders.GetOrder)
+	r.Get("/api/stats", orders.GetStats)
 	r.Post("/api/orders", orders.CreateOrder)
 
 	return r

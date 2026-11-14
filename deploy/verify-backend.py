@@ -72,14 +72,20 @@ def main():
         try:
             conn.execute("INSERT INTO products VALUES (%s,'Integration keyboard',1200,10),(%s,'Scarce item',100,3),(%s,'Free item',0,3)", (product, scarce, free))
             assert request("GET", "/health")[0] == 200
-            for path in ("/api/stats", "/internal/payments", "/internal/reservations", f"/internal/products/{product}"):
+            for path in ("/internal/payments", "/internal/reservations", f"/internal/products/{product}"):
                 assert request("GET", path)[0] == 404, path
                 assert request("POST", path, {})[0] == 404, path
+            _, stats_before = request("GET", "/api/stats")
+            assert request("POST", "/api/stats", {})[0] == 405
+            assert set(stats_before) == {"totalOrders", "pendingOrders", "processingOrders", "completedOrders", "failedOrders"}
             assert request("POST", "/api/orders", {"productId": str(uuid4()), "quantity": 1})[0] == 404
             status, order = request("POST", "/api/orders", {"productId": product, "quantity": 2, "productName": "untrusted", "unitPriceCents": 1})
             assert status == 201 and order["status"] == "completed", (status, order)
             assert order["productName"] == "Integration keyboard" and order["unitPriceCents"] == 1200
             order_id = order["id"]
+            _, stats_after = request("GET", "/api/stats")
+            assert stats_after["totalOrders"] == stats_before["totalOrders"] + 1
+            assert stats_after["completedOrders"] == stats_before["completedOrders"] + 1
             assert request("GET", f"/api/orders/{order_id}")[1] == order
             assert any(item["id"] == order_id for item in request("GET", "/api/orders")[1])
             products = request("GET", "/api/products")[1]

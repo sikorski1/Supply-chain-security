@@ -25,6 +25,20 @@ func TestGetOrdersReturnsEmptySlice(t *testing.T) {
 	}
 }
 
+func TestGetOrderStatsReturnsRepositoryCounts(t *testing.T) {
+	want := repository.GetOrderStatsRow{TotalOrders: 3, PendingOrders: 1, CompletedOrders: 2}
+	repo := &stubRepo{stats: want}
+	service := NewService(repo)
+
+	got, err := service.GetOrderStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetOrderStats: %v", err)
+	}
+	if got != want {
+		t.Fatalf("stats = %+v, want %+v", got, want)
+	}
+}
+
 func TestGetOrderNotFound(t *testing.T) {
 	repo := &stubRepo{findErr: pgx.ErrNoRows}
 	service := NewService(repo)
@@ -119,6 +133,7 @@ func TestCreateOrderRejectsInvalidInput(t *testing.T) {
 type stubRepo struct {
 	orders       []repository.Order
 	getErr       error
+	stats        repository.GetOrderStatsRow
 	order        repository.Order
 	findErr      error
 	called       bool
@@ -131,6 +146,10 @@ func (s *stubRepo) GetOrders(context.Context) ([]repository.Order, error) {
 		return nil, s.getErr
 	}
 	return s.orders, nil
+}
+
+func (s *stubRepo) GetOrderStats(context.Context) (repository.GetOrderStatsRow, error) {
+	return s.stats, nil
 }
 
 func (s *stubRepo) FindOrderById(context.Context, pgtype.UUID) (repository.Order, error) {

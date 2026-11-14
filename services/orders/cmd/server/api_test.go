@@ -18,6 +18,7 @@ func TestRouterOrdersEndpoints(t *testing.T) {
 		status int
 	}{
 		{name: "list", method: http.MethodGet, target: "/api/orders", want: "GET /api/orders", status: http.StatusOK},
+		{name: "stats", method: http.MethodGet, target: "/api/stats", want: "GET /api/stats", status: http.StatusOK},
 		{name: "detail", method: http.MethodGet, target: "/api/orders/11111111-1111-4111-8111-111111111111", want: "GET /api/orders/11111111-1111-4111-8111-111111111111", status: http.StatusOK},
 		{name: "create", method: http.MethodPost, target: "/api/orders", want: "POST /api/orders", status: http.StatusCreated},
 	}
@@ -61,6 +62,11 @@ type stubOrders struct {
 }
 
 func (s *stubOrders) GetOrders(w http.ResponseWriter, r *http.Request) {
+	s.called = r.Method + " " + r.URL.Path
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *stubOrders) GetStats(w http.ResponseWriter, r *http.Request) {
 	s.called = r.Method + " " + r.URL.Path
 	w.WriteHeader(http.StatusOK)
 }
