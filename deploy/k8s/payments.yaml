@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments
+    spec:
+      containers:
+        - name: payments
+          image: localhost:5001/payments:benchmark
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8083
+          env:
+            - name: ADDR
+              value: ":8083"
+            - name: GOOSE_DB_STRING
+              value: "postgresql://app:app@postgres:5432/supply_chain?sslmode=disable"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            periodSeconds: 5
+            timeoutSeconds: 3

@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications
+  template:
+    metadata:
+      labels:
+        app: notifications
+    spec:
+      containers:
+        - name: notifications
+          image: localhost:5001/notifications:benchmark
+          imagePullPolicy: Always
+          env:
+            - name: GOOSE_DB_STRING
+              value: "postgresql://app:app@postgres:5432/supply_chain?sslmode=disable"
+            - name: NATS_URL
+              value: "nats://nats:4222"
+          readinessProbe:
+            exec:
+              command: ["node", "dist/health.js"]
+            periodSeconds: 5
+            timeoutSeconds: 5

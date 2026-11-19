@@ -118,14 +118,45 @@ contents, Docker's host image/build caches, and unrelated containers. Adding
 `--volumes` to the registry `down` command also permanently deletes its stored
 images and security artifacts; use that only for an intentional data reset.
 Application Compose projects have separate lifecycles and can be stopped
-independently. This bootstrap provisions infrastructure only; application
-Kubernetes manifests and the L0–L5 pipeline remain separate work.
+independently. The L0 workflow applies the application Kubernetes manifests
+after this bootstrap.
 
 Verified on 2026-11-14 with kind v0.33.0, Docker Engine 29.5.2, and Compose 5.1.4:
 new-cluster bootstrap, registry health, host image push, Kubernetes pull and Pod
 execution, setup rerun from outside the repository without replacing resources,
 and registry-container recreation with image persistence and network reattachment.
 The integration check passed both before and after registry recreation.
+
+## L0 CI/CD benchmark
+
+Run **L0 CI/CD Benchmark** from the repository's **Actions** tab. The `[self-hosted, linux]`
+runner must have Python 3, a C compiler for Go race tests, Docker with Compose v2,
+and kubectl with access to the existing `kind-benchmark` context. The registry
+must be reachable at `localhost:5001` from the runner. Run `bash deploy/setup-kind.sh`
+on that host if the cluster or registry needs bootstrapping.
+
+The workflow prepares PostgreSQL, NATS JetStream, and internal Services in the
+`benchmark` namespace. The seven component jobs then run one at a time and deploy
+images tagged `l0-<run-id>-<attempt>`. The namespace retains its Deployments and data
+volumes between runs. Use `kubectl --context kind-benchmark -n benchmark port-forward
+svc/frontend 3000:8080` to open the dashboard locally.
+GitHub Actions keeps one additional run pending for the shared concurrency group.
+Rollout timing ends when Kubernetes reports the Deployment rollout complete.
+HTTP components use their `/health` endpoints for readiness, and workers use
+their existing database and JetStream checks.
+
+Each component artifact contains `results.json` and `results.csv` with the commit,
+runner, image, run identifiers, status, and durations in seconds. The total is wall
+time from checkout start through rollout completion, including gaps between stages.
+Cluster preparation, language runtime setup, and artifact generation/upload are
+outside that interval. The Analytics test duration includes starting and removing
+its isolated Compose database and broker. Failed jobs that reach checkout report
+elapsed time through the last attempted stage and leave later durations blank in
+CSV and `null` in JSON.
+
+Each component starts with a fresh source checkout. Docker build caches, local
+package caches, registry blobs, and kind state are reused when present. Record the
+cache and cluster state when comparing runs.
 
 ## Service configuration and behavior
 

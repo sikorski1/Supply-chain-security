@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: localhost:5001/frontend:benchmark
+          imagePullPolicy: Always
+          # Resolve the Kubernetes Service using the Pod's DNS search path.
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              sed -e '/resolver 127[.]0[.]0[.]11 /d' \
+                  -e '/set \$gateway /d' \
+                  -e 's|proxy_pass \$gateway;|proxy_pass http://api-gateway:8080;|' \
+                  /etc/nginx/nginx.conf > /tmp/nginx/kubernetes.conf
+              exec nginx -c /tmp/nginx/kubernetes.conf -g 'daemon off;'
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3

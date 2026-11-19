@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory
+  template:
+    metadata:
+      labels:
+        app: inventory
+    spec:
+      containers:
+        - name: inventory
+          image: localhost:5001/inventory:benchmark
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8082
+          env:
+            - name: ADDR
+              value: ":8082"
+            - name: GOOSE_DB_STRING
+              value: "postgresql://app:app@postgres:5432/supply_chain?sslmode=disable"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            periodSeconds: 5
+            timeoutSeconds: 3
