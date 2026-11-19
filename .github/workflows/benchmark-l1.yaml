@@ -1,0 +1,319 @@
+name: L1 CI/CD Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize with L0 on the shared runner and cluster.
+concurrency:
+  group: supply-chain-benchmark
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  KUBE_CONTEXT: kind-benchmark
+  KUBE_NAMESPACE: benchmark
+
+jobs:
+  prepare:
+    name: Prepare kind dependencies
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check registry and apply shared manifests
+        run: |
+          curl --fail --silent --show-error --max-time 10 http://localhost:5001/v2/
+          kubectl --context "$KUBE_CONTEXT" wait --for=condition=Ready nodes --all --timeout=120s
+          kubectl --context "$KUBE_CONTEXT" apply -f deploy/k8s/namespace.yaml
+          kubectl --context "$KUBE_CONTEXT" -n "$KUBE_NAMESPACE" apply -f deploy/k8s/support.yaml
+          for workload in postgres nats; do
+            kubectl --context "$KUBE_CONTEXT" -n "$KUBE_NAMESPACE" rollout status "deployment/$workload" --timeout=180s
+          done
+
+  benchmark:
+    name: L1 / ${{ matrix.component }}
+    needs: prepare
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - component: inventory
+            directory: services/inventory
+            runtime: go
+          - component: payments
+            directory: services/payments
+            runtime: go
+          - component: orders
+            directory: services/orders
+            runtime: go
+          - component: api-gateway
+            directory: api-gateway
+            runtime: go
+          - component: notifications
+            directory: workers/notifications
+            runtime: bun
+          - component: analytics
+            directory: workers/python-worker
+            runtime: python
+          - component: frontend
+            directory: frontend
+            runtime: bun
+
+    env:
+      COMPONENT: ${{ matrix.component }}
+      COMPONENT_DIR: ${{ matrix.directory }}
+      RUNTIME: ${{ matrix.runtime }}
+      IMAGE: localhost:5001/${{ matrix.component }}:l1-${{ github.run_id }}-${{ github.run_attempt }}
+      SYFT_CHECK_FOR_APP_UPDATE: 'false'
+
+    steps:
+      # Provision the same runtime versions used by the Dockerfiles before timing starts.
+      - uses: actions/setup-go@v5
+        if: matrix.runtime == 'go'
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - uses: actions/setup-node@v4
+        if: matrix.runtime == 'bun'
+        with:
+          node-version: '24.11.1'
+
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.runtime == 'bun'
+        with:
+          bun-version: '1.3.0'
+
+      - uses: actions/setup-python@v5
+        if: matrix.runtime == 'python'
+        with:
+          python-version: '3.12.12'
+
+      - uses: astral-sh/setup-uv@v6
+        if: matrix.runtime == 'python'
+        with:
+          version: '0.13.8'
+          enable-cache: false
+
+      - name: Set up Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@v0.24.3
+        with:
+          syft-version: 'v1.57.1'
+
+      - name: Start measurement
+        id: timing
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: |
+          result_dir=$(mktemp -d "$RUNNER_TEMP/benchmark-l1.XXXXXX")
+          "$SYFT" version -o json > "$result_dir/syft-version.json"
+          source_dir=$(mktemp -d "$GITHUB_WORKSPACE/.benchmark-l1.XXXXXX")
+          echo "RESULT_DIR=$result_dir" >> "$GITHUB_ENV"
+          echo "BENCHMARK_SOURCE=${source_dir##*/}" >> "$GITHUB_ENV"
+          python3 -c 'import time; print(time.monotonic_ns())' > "$result_dir/start"
+
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.BENCHMARK_SOURCE }}
+          persist-credentials: false
+
+      - name: Record checkout time
+        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        run: |
+          end=$(python3 -c 'import time; print(time.monotonic_ns())')
+          start=$(cat "$RESULT_DIR/start")
+          printf 'checkout\t%s\n' "$((end - start))" > "$RESULT_DIR/stages.tsv"
+          printf '%s\n' "$end" > "$RESULT_DIR/end"
+
+      - name: Install, test, build, push, generate SBOMs, and deploy
+        working-directory: ${{ env.BENCHMARK_SOURCE }}
+        timeout-minutes: 20
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: |
+          now() {
+            python3 -c 'import time; print(time.monotonic_ns())'
+          }
+
+          record_stage() {
+            local end
+            end=$(now)
+            printf '%s\t%s\n' "$stage" "$((end - stage_start))" >> "$RESULT_DIR/stages.tsv"
+            printf '%s\n' "$end" > "$RESULT_DIR/end"
+            echo '::endgroup::'
+          }
+
+          run_stage() {
+            stage=$1
+            shift
+            echo "::group::$stage"
+            stage_start=$(now)
+            trap record_stage EXIT
+            "$@"
+            record_stage
+            trap - EXIT
+          }
+
+          install_dependencies() (
+            cd "$COMPONENT_DIR"
+            case "$RUNTIME" in
+              go) go mod download ;;
+              bun) bun install --frozen-lockfile ;;
+              python) uv sync --locked --python "$pythonLocation/bin/python3" ;;
+            esac
+          )
+
+          test_analytics() (
+            # Test events and database rows belong to a disposable Compose project.
+            local override="$RESULT_DIR/analytics-ports.yaml"
+            cat > "$override" <<'YAML'
+          services:
+            postgres:
+              ports: ["127.0.0.1::5432"]
+              healthcheck:
+                test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "supply_chain"]
+            nats:
+              ports: ["127.0.0.1::4222"]
+          YAML
+            local compose=(docker compose -p "l1-analytics-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+              -f "$GITHUB_WORKSPACE/$BENCHMARK_SOURCE/deploy/docker-compose.yaml" -f "$override")
+            trap '"${compose[@]}" down --volumes || exit 1' EXIT
+            "${compose[@]}" up -d --wait --wait-timeout 60 postgres nats
+
+            local postgres nats report="$RESULT_DIR/pytest.xml"
+            postgres=$("${compose[@]}" port postgres 5432)
+            nats=$("${compose[@]}" port nats 4222)
+            export GOOSE_DB_STRING="postgresql://app:app@$postgres/supply_chain?sslmode=disable"
+            export NATS_URL="nats://$nats"
+            uv run --no-sync pytest -q -rs --junitxml="$report"
+            python3 - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          if ET.parse(sys.argv[1]).find('.//skipped') is not None:
+              sys.exit('Analytics benchmark requires all tests to run.')
+          PY
+          )
+
+          run_tests() (
+            cd "$COMPONENT_DIR"
+            case "$RUNTIME" in
+              go) go test -race -count=1 ./... ;;
+              bun) bun run test ;;
+              python) test_analytics ;;
+            esac
+          )
+
+          push_image() {
+            docker push "$IMAGE" | tee "$RESULT_DIR/push.log"
+            awk -v tag="${IMAGE##*:}:" '
+              $1 == tag && $2 == "digest:" && $3 ~ /^sha256:[0-9a-f]+$/ { digest = $3 }
+              END {
+                if (length(digest) != 71) {
+                  print "Could not read the pushed image digest." > "/dev/stderr"
+                  exit 1
+                }
+                print digest
+              }
+            ' "$RESULT_DIR/push.log" > "$RESULT_DIR/image-digest"
+          }
+
+          generate_source_sbom() {
+            local snapshot="$RESULT_DIR/source-snapshot"
+            local output="$RESULT_DIR/sbom-source.cdx.json"
+            mkdir "$snapshot"
+            git archive "HEAD:$COMPONENT_DIR" | tar -x -C "$snapshot"
+            GOPROXY=off GONOPROXY=none SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES=true \
+              "$SYFT" scan "dir:$snapshot" --source-name "$COMPONENT" --source-version "$GITHUB_SHA" \
+                -o "cyclonedx-json=$output.tmp"
+            mv "$output.tmp" "$output"
+          }
+
+          generate_image_sbom() {
+            local output="$RESULT_DIR/sbom-image.cdx.json"
+            "$SYFT" scan "docker:$IMAGE" -o "cyclonedx-json=$output.tmp"
+            mv "$output.tmp" "$output"
+          }
+
+          deploy_image() {
+            local kube=(kubectl --context "$KUBE_CONTEXT" -n "$KUBE_NAMESPACE")
+            "${kube[@]}" set image --local -f "deploy/k8s/$COMPONENT.yaml" "$COMPONENT=$IMAGE" -o yaml |
+              "${kube[@]}" apply -f -
+            "${kube[@]}" rollout status "deployment/$COMPONENT" --timeout=180s
+          }
+
+          run_stage install install_dependencies
+          run_stage test run_tests
+          run_stage build docker build --tag "$IMAGE" "$COMPONENT_DIR"
+          run_stage push push_image
+          run_stage sbom_source generate_source_sbom
+          run_stage sbom_image generate_image_sbom
+          run_stage deploy deploy_image
+
+      - name: Write JSON and CSV results
+        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        env:
+          BENCHMARK_STATUS: ${{ job.status }}
+        run: |
+          python3 - <<'PY'
+          import csv
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ['RESULT_DIR'])
+          stages = dict(line.split('\t') for line in (path / 'stages.tsv').read_text().splitlines())
+          digest_path = path / 'image-digest'
+          image_digest = digest_path.read_text().strip() if digest_path.exists() else None
+          result = {
+              'level': 'L1',
+              'component': os.environ['COMPONENT'],
+              'commit_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'runner': os.environ['RUNNER_NAME'],
+              'image': os.environ['IMAGE'],
+              'image_digest': image_digest or None,
+              'syft_version': json.loads((path / 'syft-version.json').read_text())['version'],
+              'status': os.environ['BENCHMARK_STATUS'],
+          }
+          for stage in ('checkout', 'install', 'test', 'build', 'push', 'sbom_source', 'sbom_image', 'deploy'):
+              result[f'{stage}_seconds'] = int(stages[stage]) / 1e9 if stage in stages else None
+          result['total_seconds'] = (int((path / 'end').read_text()) - int((path / 'start').read_text())) / 1e9
+          (path / 'results.json').write_text(json.dumps(result, indent=2) + '\n')
+          with (path / 'results.csv').open('w', newline='') as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=result.keys())
+              writer.writeheader()
+              writer.writerow(result)
+          PY
+
+      - name: Upload benchmark results
+        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: l1-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.RESULT_DIR }}/results.json
+            ${{ env.RESULT_DIR }}/results.csv
+            ${{ env.RESULT_DIR }}/sbom-source.cdx.json
+            ${{ env.RESULT_DIR }}/sbom-image.cdx.json
+          if-no-files-found: error
+
+      - name: Remove temporary checkout
+        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        run: rm -rf -- "$GITHUB_WORKSPACE/${BENCHMARK_SOURCE:?}"

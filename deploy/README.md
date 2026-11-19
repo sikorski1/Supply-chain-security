@@ -118,7 +118,7 @@ contents, Docker's host image/build caches, and unrelated containers. Adding
 `--volumes` to the registry `down` command also permanently deletes its stored
 images and security artifacts; use that only for an intentional data reset.
 Application Compose projects have separate lifecycles and can be stopped
-independently. The L0 workflow applies the application Kubernetes manifests
+independently. The benchmark workflows apply the application Kubernetes manifests
 after this bootstrap.
 
 Verified on 2026-11-14 with kind v0.33.0, Docker Engine 29.5.2, and Compose 5.1.4:
@@ -157,6 +157,28 @@ CSV and `null` in JSON.
 Each component starts with a fresh source checkout. Docker build caches, local
 package caches, registry blobs, and kind state are reused when present. Record the
 cache and cluster state when comparing runs.
+
+## L1 CI/CD benchmark
+
+Run **L1 CI/CD Benchmark** from the repository's **Actions** tab. It uses the same
+runner, Kubernetes manifests, and concurrency group as L0. Each component image is
+tagged `l1-<run-id>-<attempt>`. The job provisions the pinned Syft version before
+checkout timing starts. Let each benchmark run complete before dispatching the
+next because L0 and L1 share one pending slot.
+
+After the image push and before deployment, the job generates two CycloneDX JSON
+SBOMs. `sbom-source.cdx.json` catalogs a Git snapshot of the component, including
+tracked manifests and lockfiles and Bun development dependencies. Go source
+cataloging uses the module cache populated by the install and test stages, with
+module downloads disabled for the scan. `sbom-image.cdx.json` catalogs the built
+image in the local Docker daemon. The source stage includes preparing the snapshot.
+
+A successful component artifact contains both SBOMs alongside `results.json`
+and `results.csv`. Failed jobs can upload partial timings and any completed
+SBOMs. The timing results add `sbom_source_seconds` and `sbom_image_seconds`, the
+Syft version, and the pushed image digest. Both SBOM stages count toward
+`total_seconds`. Compare L0 and L1 timings per component with the same application
+revision and cache conditions.
 
 ## Service configuration and behavior
 
