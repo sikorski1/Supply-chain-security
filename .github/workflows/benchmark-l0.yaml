@@ -107,7 +107,16 @@ jobs:
           source_dir=$(mktemp -d "$GITHUB_WORKSPACE/.benchmark-l0.XXXXXX")
           echo "RESULT_DIR=$result_dir" >> "$GITHUB_ENV"
           echo "BENCHMARK_SOURCE=${source_dir##*/}" >> "$GITHUB_ENV"
-          python3 -c 'import time; print(time.monotonic_ns())' > "$result_dir/start"
+          python3 - "$result_dir" <<'PY'
+          import sys
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          out = Path(sys.argv[1])
+          (out / 'started-at').write_text(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ') + '\n')
+          (out / 'start').write_text(f'{time.monotonic_ns()}\n')
+          PY
 
       - name: Checkout
         id: checkout
@@ -132,7 +141,7 @@ jobs:
           run_stage install install_dependencies
           run_stage test run_tests
           run_stage build docker build --tag "$IMAGE" "$COMPONENT_DIR"
-          run_stage push docker push "$IMAGE"
+          run_stage push push_image_with_digest
           run_stage deploy deploy_image
 
       - name: Write JSON and CSV results
@@ -140,33 +149,11 @@ jobs:
         env:
           BENCHMARK_STATUS: ${{ job.status }}
         run: |
-          python3 - <<'PY'
-          import csv
-          import json
-          import os
-          from pathlib import Path
-
-          path = Path(os.environ['RESULT_DIR'])
-          stages = dict(line.split('\t') for line in (path / 'stages.tsv').read_text().splitlines())
-          result = {
-              'level': 'L0',
-              'component': os.environ['COMPONENT'],
-              'commit_sha': os.environ['GITHUB_SHA'],
-              'run_id': os.environ['GITHUB_RUN_ID'],
-              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
-              'runner': os.environ['RUNNER_NAME'],
-              'image': os.environ['IMAGE'],
-              'status': os.environ['BENCHMARK_STATUS'],
-          }
-          for stage in ('checkout', 'install', 'test', 'build', 'push', 'deploy'):
-              result[f'{stage}_seconds'] = int(stages[stage]) / 1e9 if stage in stages else None
-          result['total_seconds'] = (int((path / 'end').read_text()) - int((path / 'start').read_text())) / 1e9
-          (path / 'results.json').write_text(json.dumps(result, indent=2) + '\n')
-          with (path / 'results.csv').open('w', newline='') as csv_file:
-              writer = csv.DictWriter(csv_file, fieldnames=result.keys())
-              writer.writeheader()
-              writer.writerow(result)
-          PY
+          script="$GITHUB_WORKSPACE/$BENCHMARK_SOURCE/deploy/write-results.py"
+          if [[ ! -f "$script" ]]; then
+            script="$GITHUB_WORKSPACE/deploy/write-results.py"
+          fi
+          python3 "$script" --level L0 --stages checkout install test build push deploy
 
       - name: Upload benchmark results
         if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
@@ -179,5 +166,5 @@ jobs:
           if-no-files-found: error
 
       - name: Remove temporary checkout
-        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        if: ${{ always() && steps.timing.outcome == 'success' }}
         run: rm -rf -- "$GITHUB_WORKSPACE/${BENCHMARK_SOURCE:?}"

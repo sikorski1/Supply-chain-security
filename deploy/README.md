@@ -146,8 +146,9 @@ HTTP components use their `/health` endpoints for readiness, and workers use
 their existing database and JetStream checks.
 
 Each component artifact contains `results.json` and `results.csv` with the commit,
-runner, image, run identifiers, status, and durations in seconds. The total is wall
-time from checkout start through rollout completion, including gaps between stages.
+runner, UTC timestamps, image, pushed image digest, run identifiers, status, and
+durations in seconds. The total is wall time from checkout start through rollout
+completion, including gaps between stages.
 Cluster preparation, language runtime setup, and artifact generation/upload are
 outside that interval. The Analytics test duration includes starting and removing
 its isolated Compose database and broker. Failed jobs that reach checkout report
@@ -158,9 +159,10 @@ Each component starts with a fresh source checkout. Docker build caches, local
 package caches, registry blobs, and kind state are reused when present. Record the
 cache and cluster state when comparing runs.
 
-The L0 and L1 workflows list their timed stages in YAML. Both use
-`deploy/prepare-benchmark.sh` for cluster preparation and
-`deploy/benchmark-stages.sh` for timing, tests, and deployment.
+The L0, L1, and L2 workflows list their timed stages in YAML. All three use
+`deploy/prepare-benchmark.sh` for cluster preparation, `deploy/benchmark-stages.sh`
+for timing, tests, image push with digest capture, and deployment, and
+`deploy/write-results.py` for JSON/CSV serialization.
 
 ## L1 CI/CD benchmark
 
@@ -168,7 +170,7 @@ Run **L1 CI/CD Benchmark** from the repository's **Actions** tab. It uses the sa
 runner, Kubernetes manifests, and concurrency group as L0. Each component image is
 tagged `l1-<run-id>-<attempt>`. The job provisions the pinned Syft version before
 checkout timing starts. Let each benchmark run complete before dispatching the
-next because L0 and L1 share one pending slot.
+next because L0–L2 share one pending slot.
 
 After the image push and before deployment, the job generates two CycloneDX JSON
 SBOMs. `sbom-source.cdx.json` catalogs a Git snapshot of the component, including
@@ -180,10 +182,9 @@ the snapshot.
 
 A successful component artifact contains both SBOMs alongside `results.json`
 and `results.csv`. Failed jobs can upload partial timings and any completed
-SBOMs. The timing results add `sbom_source_seconds` and `sbom_image_seconds`, the
-Syft version, and the pushed image digest. Both SBOM stages count toward
-`total_seconds`. Compare L0 and L1 timings per component with the same application
-revision and cache conditions.
+SBOMs. The timing results add `sbom_source_seconds` and `sbom_image_seconds` and
+the Syft version. Both SBOM stages count toward `total_seconds`. Compare L0 and L1
+timings per component with the same application revision and cache conditions.
 
 To reproduce either SBOM locally with Syft on your `PATH`, run the corresponding
 command from the repository root. For the image scan, set `IMAGE` to a Docker
@@ -192,6 +193,34 @@ image reference that exists locally.
 ```bash
 bash deploy/generate-sbom.sh source frontend frontend /tmp/sbom-source.cdx.json
 bash deploy/generate-sbom.sh image "$IMAGE" /tmp/sbom-image.cdx.json
+```
+
+## L2 CI/CD benchmark
+
+Run **L2 CI/CD Benchmark** from the repository's **Actions** tab. It uses the same
+runner, Kubernetes manifests, concurrency group, and Syft SBOM generation as L1.
+Each component image is tagged `l2-<run-id>-<attempt>`. Before checkout timing
+starts, the job provisions the pinned Syft (`v1.57.1`) and Trivy (`v0.76.2`)
+binaries and refreshes the local Trivy vulnerability database (`--download-db-only`),
+so per-component scan timings are not skewed by one-time DB downloads.
+
+After generating `sbom-source.cdx.json` and `sbom-image.cdx.json` and before
+deployment, the job runs `deploy/scan-vulnerabilities.sh` (`trivy sbom`) against
+both SBOMs using `--skip-db-update`, `--offline-scan`, and `--exit-code 0`. L2 is
+intentionally non-blocking so every component completes Kubernetes rollout and
+remains directly comparable with L0 and L1; policy gating belongs to L5.
+
+A successful component artifact contains `results.json`, `results.csv`, both
+CycloneDX SBOMs, and both Trivy JSON reports (`trivy-source.json`,
+`trivy-image.json`). The timing results add `scan_source_seconds`,
+`scan_image_seconds`, `trivy_version`, and `trivy_db_updated_at`.
+
+To reproduce a vulnerability scan locally with Trivy on your `PATH` (after
+running `trivy image --download-db-only`):
+
+```bash
+bash deploy/scan-vulnerabilities.sh /tmp/sbom-source.cdx.json /tmp/trivy-source.json
+bash deploy/scan-vulnerabilities.sh /tmp/sbom-image.cdx.json /tmp/trivy-image.json
 ```
 
 ## Service configuration and behavior
