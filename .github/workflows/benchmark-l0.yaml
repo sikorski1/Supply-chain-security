@@ -30,14 +30,7 @@ jobs:
           persist-credentials: false
 
       - name: Check registry and apply shared manifests
-        run: |
-          curl --fail --silent --show-error --max-time 10 http://localhost:5001/v2/
-          kubectl --context "$KUBE_CONTEXT" wait --for=condition=Ready nodes --all --timeout=120s
-          kubectl --context "$KUBE_CONTEXT" apply -f deploy/k8s/namespace.yaml
-          kubectl --context "$KUBE_CONTEXT" -n "$KUBE_NAMESPACE" apply -f deploy/k8s/support.yaml
-          for workload in postgres nats; do
-            kubectl --context "$KUBE_CONTEXT" -n "$KUBE_NAMESPACE" rollout status "deployment/$workload" --timeout=180s
-          done
+        run: bash deploy/prepare-benchmark.sh
 
   benchmark:
     name: L0 / ${{ matrix.component }}
@@ -72,6 +65,7 @@ jobs:
             runtime: bun
 
     env:
+      BENCHMARK_LEVEL: l0
       COMPONENT: ${{ matrix.component }}
       COMPONENT_DIR: ${{ matrix.directory }}
       RUNTIME: ${{ matrix.runtime }}
@@ -134,86 +128,7 @@ jobs:
         working-directory: ${{ env.BENCHMARK_SOURCE }}
         timeout-minutes: 20
         run: |
-          now() {
-            python3 -c 'import time; print(time.monotonic_ns())'
-          }
-
-          record_stage() {
-            local end
-            end=$(now)
-            printf '%s\t%s\n' "$stage" "$((end - stage_start))" >> "$RESULT_DIR/stages.tsv"
-            printf '%s\n' "$end" > "$RESULT_DIR/end"
-            echo '::endgroup::'
-          }
-
-          run_stage() {
-            stage=$1
-            shift
-            echo "::group::$stage"
-            stage_start=$(now)
-            trap record_stage EXIT
-            "$@"
-            record_stage
-            trap - EXIT
-          }
-
-          install_dependencies() (
-            cd "$COMPONENT_DIR"
-            case "$RUNTIME" in
-              go) go mod download ;;
-              bun) bun install --frozen-lockfile ;;
-              python) uv sync --locked --python "$pythonLocation/bin/python3" ;;
-            esac
-          )
-
-          test_analytics() (
-            # Test events and database rows belong to a disposable Compose project.
-            local override="$RESULT_DIR/analytics-ports.yaml"
-            cat > "$override" <<'YAML'
-          services:
-            postgres:
-              ports: ["127.0.0.1::5432"]
-              healthcheck:
-                test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "supply_chain"]
-            nats:
-              ports: ["127.0.0.1::4222"]
-          YAML
-            local compose=(docker compose -p "l0-analytics-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-              -f "$GITHUB_WORKSPACE/$BENCHMARK_SOURCE/deploy/docker-compose.yaml" -f "$override")
-            trap '"${compose[@]}" down --volumes || exit 1' EXIT
-            "${compose[@]}" up -d --wait --wait-timeout 60 postgres nats
-
-            local postgres nats report="$RESULT_DIR/pytest.xml"
-            postgres=$("${compose[@]}" port postgres 5432)
-            nats=$("${compose[@]}" port nats 4222)
-            export GOOSE_DB_STRING="postgresql://app:app@$postgres/supply_chain?sslmode=disable"
-            export NATS_URL="nats://$nats"
-            uv run --no-sync pytest -q -rs --junitxml="$report"
-            python3 - "$report" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          if ET.parse(sys.argv[1]).find('.//skipped') is not None:
-              sys.exit('Analytics benchmark requires all tests to run.')
-          PY
-          )
-
-          run_tests() (
-            cd "$COMPONENT_DIR"
-            case "$RUNTIME" in
-              go) go test -race -count=1 ./... ;;
-              bun) bun run test ;;
-              python) test_analytics ;;
-            esac
-          )
-
-          deploy_image() {
-            local kube=(kubectl --context "$KUBE_CONTEXT" -n "$KUBE_NAMESPACE")
-            "${kube[@]}" set image --local -f "deploy/k8s/$COMPONENT.yaml" "$COMPONENT=$IMAGE" -o yaml |
-              "${kube[@]}" apply -f -
-            "${kube[@]}" rollout status "deployment/$COMPONENT" --timeout=180s
-          }
-
+          source deploy/benchmark-stages.sh
           run_stage install install_dependencies
           run_stage test run_tests
           run_stage build docker build --tag "$IMAGE" "$COMPONENT_DIR"

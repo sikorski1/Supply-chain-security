@@ -158,6 +158,10 @@ Each component starts with a fresh source checkout. Docker build caches, local
 package caches, registry blobs, and kind state are reused when present. Record the
 cache and cluster state when comparing runs.
 
+The L0 and L1 workflows list their timed stages in YAML. Both use
+`deploy/prepare-benchmark.sh` for cluster preparation and
+`deploy/benchmark-stages.sh` for timing, tests, and deployment.
+
 ## L1 CI/CD benchmark
 
 Run **L1 CI/CD Benchmark** from the repository's **Actions** tab. It uses the same
@@ -171,7 +175,8 @@ SBOMs. `sbom-source.cdx.json` catalogs a Git snapshot of the component, includin
 tracked manifests and lockfiles and Bun development dependencies. Go source
 cataloging uses the module cache populated by the install and test stages, with
 module downloads disabled for the scan. `sbom-image.cdx.json` catalogs the built
-image in the local Docker daemon. The source stage includes preparing the snapshot.
+image in the local Docker daemon. The source stage includes preparing and removing
+the snapshot.
 
 A successful component artifact contains both SBOMs alongside `results.json`
 and `results.csv`. Failed jobs can upload partial timings and any completed
@@ -179,6 +184,15 @@ SBOMs. The timing results add `sbom_source_seconds` and `sbom_image_seconds`, th
 Syft version, and the pushed image digest. Both SBOM stages count toward
 `total_seconds`. Compare L0 and L1 timings per component with the same application
 revision and cache conditions.
+
+To reproduce either SBOM locally with Syft on your `PATH`, run the corresponding
+command from the repository root. For the image scan, set `IMAGE` to a Docker
+image reference that exists locally.
+
+```bash
+bash deploy/generate-sbom.sh source frontend frontend /tmp/sbom-source.cdx.json
+bash deploy/generate-sbom.sh image "$IMAGE" /tmp/sbom-image.cdx.json
+```
 
 ## Service configuration and behavior
 
