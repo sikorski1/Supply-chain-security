@@ -74,6 +74,11 @@ def main() -> None:
         vuln_db = trivy_info.get('VulnerabilityDB') or {}
         result['trivy_db_updated_at'] = vuln_db.get('UpdatedAt')
 
+    cosign_version_path = result_dir / 'cosign-version.json'
+    if cosign_version_path.exists():
+        cosign_info = json.loads(cosign_version_path.read_text())
+        result['cosign_version'] = cosign_info.get('gitVersion')
+
     result['status'] = os.environ['BENCHMARK_STATUS']
 
     for stage in args.stages:

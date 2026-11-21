@@ -95,3 +95,26 @@ deploy_image() {
     "${kube[@]}" apply -f -
   "${kube[@]}" rollout status "deployment/$COMPONENT" --timeout=180s
 }
+
+image_digest_ref() {
+  local digest
+  digest=$(tr -d '\r\n' < "$RESULT_DIR/image-digest")
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+    echo "Missing or invalid pushed image digest in $RESULT_DIR/image-digest." >&2
+    return 1
+  }
+  printf '%s@%s\n' "${IMAGE%:*}" "$digest"
+}
+
+deploy_image_by_digest() {
+  local digest kube=(kubectl --context "$KUBE_CONTEXT" -n "$KUBE_NAMESPACE")
+  digest=$(tr -d '\r\n' < "$RESULT_DIR/image-digest")
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+    echo "Missing or invalid pushed image digest in $RESULT_DIR/image-digest." >&2
+    return 1
+  }
+  # Tag + digest pins the immutable manifest while keeping a unique per-run spec so Kubernetes rolls out.
+  "${kube[@]}" set image --local -f "deploy/k8s/$COMPONENT.yaml" "$COMPONENT=$IMAGE@$digest" -o yaml |
+    "${kube[@]}" apply -f -
+  "${kube[@]}" rollout status "deployment/$COMPONENT" --timeout=180s
+}

@@ -223,6 +223,42 @@ bash deploy/scan-vulnerabilities.sh /tmp/sbom-source.cdx.json /tmp/trivy-source.
 bash deploy/scan-vulnerabilities.sh /tmp/sbom-image.cdx.json /tmp/trivy-image.json
 ```
 
+## L3 CI/CD benchmark
+
+Run **L3 CI/CD Benchmark** from the repository's **Actions** tab. It uses the same
+runner, Kubernetes manifests, concurrency group, Syft SBOM generation, and Trivy
+SBOM scanning as L2, and adds local key-based Cosign image signing and verification.
+Each component image is tagged `l3-<run-id>-<attempt>` and deployed by immutable
+tag+digest reference (`<image>@<sha256:...>`).
+
+Before running L3, add the private key as the `COSIGN_PRIVATE_KEY` repository secret
+in GitHub Actions (and `COSIGN_PASSWORD` if the key uses a passphrase). The matching
+public key (`security/cosign.pub`) and offline signing configuration
+(`security/cosign-signing-config.json`, no external transparency log) are committed
+in the repository. Before checkout timing starts, the job provisions pinned Cosign
+`v3.1.4` alongside Syft `v1.57.1` and Trivy `v0.76.2`.
+
+After vulnerability scanning and before deployment, the job runs two timed stages
+against the pushed immutable image digest:
+
+- `sign_image` (`deploy/sign-image.sh`): signs `localhost:5001/<component>@sha256:...`
+  and pushes the Cosign v3 Sigstore bundle to the local registry via OCI referrers-tag
+  fallback without external Fulcio/Rekor network calls.
+- `verify_image` (`deploy/verify-image.sh`): verifies the signature against
+  `security/cosign.pub` (`--insecure-ignore-tlog`) and writes `cosign-verify.json`.
+  Failed verification blocks Kubernetes deployment.
+
+A successful component artifact contains all L2 artifacts plus `cosign-verify.json`.
+The timing results add `cosign_version`, `sign_image_seconds`, and `verify_image_seconds`.
+
+To reproduce signing and verification locally with Cosign on your `PATH`:
+
+```bash
+COSIGN_PRIVATE_KEY=$(cat ~/.config/supply-chain-benchmark/cosign.key) \
+  bash deploy/sign-image.sh "localhost:5001/inventory@sha256:..."
+bash deploy/verify-image.sh "localhost:5001/inventory@sha256:..." /tmp/cosign-verify.json
+```
+
 ## Service configuration and behavior
 
 | Service | Internal address | Persistence |
