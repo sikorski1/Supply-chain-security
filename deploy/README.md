@@ -259,6 +259,43 @@ COSIGN_PRIVATE_KEY=$(cat ~/.config/supply-chain-benchmark/cosign.key) \
 bash deploy/verify-image.sh "localhost:5001/inventory@sha256:..." /tmp/cosign-verify.json
 ```
 
+## L4 CI/CD benchmark
+
+Run **L4 CI/CD Benchmark** from the repository's **Actions** tab. It uses the same
+runner, Kubernetes manifests, concurrency group, Syft SBOM generation, Trivy SBOM
+scanning, and Cosign key-based signing/verification as L3, and adds SLSA Provenance
+v1.0 attestations. Each component image is tagged `l4-<run-id>-<attempt>` and
+deployed by immutable tag+digest reference (`<image>@<sha256:...>`).
+
+L4 reuses `COSIGN_PRIVATE_KEY`, `security/cosign.pub`, and
+`security/cosign-signing-config.json` with pinned Cosign `v3.1.4`, keeping
+`docker build` unchanged from L0–L3 so provenance overhead is measured cleanly.
+After `verify_image` and before deployment, the job runs two timed stages against
+the pushed immutable image digest:
+
+- `attest_provenance` (`deploy/attest-provenance.sh`): generates a SLSA Provenance
+  v1.0 predicate (`provenance.json`) capturing repository, commit SHA, workflow
+  path, component build context, runner, and invocation metadata, then signs and
+  attaches it via `cosign attest --type slsaprovenance1` to the local registry.
+- `verify_provenance` (`deploy/verify-provenance.sh`): verifies the signed
+  attestation via `cosign verify-attestation --type slsaprovenance1` against
+  `security/cosign.pub` (`--insecure-ignore-tlog`), validates the predicate type,
+  and writes the verified DSSE envelopes as a JSON array (`provenance-verify.json`).
+  Failed verification blocks Kubernetes deployment.
+
+A successful component artifact contains all L3 artifacts plus `provenance.json`
+and `provenance-verify.json`. The timing results add `attest_provenance_seconds`
+and `verify_provenance_seconds`.
+
+To reproduce provenance attestation and verification locally with Cosign on your `PATH`:
+
+```bash
+COMPONENT=inventory COMPONENT_DIR=services/inventory \
+  COSIGN_PRIVATE_KEY=$(cat ~/.config/supply-chain-benchmark/cosign.key) \
+  bash deploy/attest-provenance.sh "localhost:5001/inventory@sha256:..." /tmp/provenance.json
+bash deploy/verify-provenance.sh "localhost:5001/inventory@sha256:..." /tmp/provenance-verify.json
+```
+
 ## Service configuration and behavior
 
 | Service | Internal address | Persistence |

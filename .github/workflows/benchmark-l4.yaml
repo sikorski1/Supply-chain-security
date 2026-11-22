@@ -1,0 +1,226 @@
+name: L4 CI/CD Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize with L0–L3 on the shared runner and cluster.
+concurrency:
+  group: supply-chain-benchmark
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  KUBE_CONTEXT: kind-benchmark
+  KUBE_NAMESPACE: benchmark
+
+jobs:
+  prepare:
+    name: Prepare kind dependencies
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check registry and apply shared manifests
+        run: bash deploy/prepare-benchmark.sh
+
+  benchmark:
+    name: L4 / ${{ matrix.component }}
+    needs: prepare
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - component: inventory
+            directory: services/inventory
+            runtime: go
+          - component: payments
+            directory: services/payments
+            runtime: go
+          - component: orders
+            directory: services/orders
+            runtime: go
+          - component: api-gateway
+            directory: api-gateway
+            runtime: go
+          - component: notifications
+            directory: workers/notifications
+            runtime: bun
+          - component: analytics
+            directory: workers/python-worker
+            runtime: python
+          - component: frontend
+            directory: frontend
+            runtime: bun
+
+    env:
+      BENCHMARK_LEVEL: l4
+      COMPONENT: ${{ matrix.component }}
+      COMPONENT_DIR: ${{ matrix.directory }}
+      RUNTIME: ${{ matrix.runtime }}
+      IMAGE: localhost:5001/${{ matrix.component }}:l4-${{ github.run_id }}-${{ github.run_attempt }}
+      SYFT_CHECK_FOR_APP_UPDATE: 'false'
+
+    steps:
+      # Provision the same runtime versions used by the Dockerfiles before timing starts.
+      - uses: actions/setup-go@v5
+        if: matrix.runtime == 'go'
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - uses: actions/setup-node@v4
+        if: matrix.runtime == 'bun'
+        with:
+          node-version: '24.11.1'
+
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.runtime == 'bun'
+        with:
+          bun-version: '1.3.0'
+
+      - uses: actions/setup-python@v5
+        if: matrix.runtime == 'python'
+        with:
+          python-version: '3.12.12'
+
+      - uses: astral-sh/setup-uv@v6
+        if: matrix.runtime == 'python'
+        with:
+          version: '0.13.8'
+          enable-cache: false
+
+      - name: Set up Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@v0.24.3
+        with:
+          syft-version: 'v1.57.1'
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: 'v0.76.2'
+          cache: false
+
+      - name: Prepare Trivy vulnerability database
+        run: trivy image --download-db-only --skip-version-check --disable-telemetry
+
+      - name: Set up Cosign
+        uses: sigstore/cosign-installer@v4.1.3
+        with:
+          cosign-release: 'v3.1.4'
+
+      - name: Start measurement
+        id: timing
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${COSIGN_PRIVATE_KEY:-}" ]]; then
+            echo 'Missing COSIGN_PRIVATE_KEY repository secret.' >&2
+            exit 1
+          fi
+          result_dir=$(mktemp -d "$RUNNER_TEMP/benchmark-l4.XXXXXX")
+          "$SYFT" version -o json > "$result_dir/syft-version.json"
+          trivy --version --format json > "$result_dir/trivy-version.json"
+          cosign version --json > "$result_dir/cosign-version.json"
+          source_dir=$(mktemp -d "$GITHUB_WORKSPACE/.benchmark-l4.XXXXXX")
+          echo "RESULT_DIR=$result_dir" >> "$GITHUB_ENV"
+          echo "BENCHMARK_SOURCE=${source_dir##*/}" >> "$GITHUB_ENV"
+          python3 - "$result_dir" <<'PY'
+          import sys
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          out = Path(sys.argv[1])
+          (out / 'started-at').write_text(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ') + '\n')
+          (out / 'start').write_text(f'{time.monotonic_ns()}\n')
+          PY
+
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.BENCHMARK_SOURCE }}
+          persist-credentials: false
+
+      - name: Record checkout time
+        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        run: |
+          end=$(python3 -c 'import time; print(time.monotonic_ns())')
+          start=$(cat "$RESULT_DIR/start")
+          printf 'checkout\t%s\n' "$((end - start))" > "$RESULT_DIR/stages.tsv"
+          printf '%s\n' "$end" > "$RESULT_DIR/end"
+
+      - name: Install, test, build, push, SBOM, scan, sign, verify, attest, and deploy
+        working-directory: ${{ env.BENCHMARK_SOURCE }}
+        timeout-minutes: 20
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          source deploy/benchmark-stages.sh
+          run_stage install install_dependencies
+          run_stage test run_tests
+          run_stage build docker build --tag "$IMAGE" "$COMPONENT_DIR"
+          run_stage push push_image_with_digest
+          run_stage sbom_source bash deploy/generate-sbom.sh \
+            source "$COMPONENT" "$COMPONENT_DIR" "$RESULT_DIR/sbom-source.cdx.json"
+          run_stage sbom_image bash deploy/generate-sbom.sh image "$IMAGE" "$RESULT_DIR/sbom-image.cdx.json"
+          run_stage scan_source bash deploy/scan-vulnerabilities.sh \
+            "$RESULT_DIR/sbom-source.cdx.json" "$RESULT_DIR/trivy-source.json"
+          run_stage scan_image bash deploy/scan-vulnerabilities.sh \
+            "$RESULT_DIR/sbom-image.cdx.json" "$RESULT_DIR/trivy-image.json"
+          image_ref=$(image_digest_ref)
+          run_stage sign_image bash deploy/sign-image.sh "$image_ref"
+          run_stage verify_image bash deploy/verify-image.sh "$image_ref" "$RESULT_DIR/cosign-verify.json"
+          run_stage attest_provenance bash deploy/attest-provenance.sh \
+            "$image_ref" "$RESULT_DIR/provenance.json"
+          run_stage verify_provenance bash deploy/verify-provenance.sh \
+            "$image_ref" "$RESULT_DIR/provenance-verify.json"
+          run_stage deploy deploy_image_by_digest
+
+      - name: Write JSON and CSV results
+        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        env:
+          BENCHMARK_STATUS: ${{ job.status }}
+        run: |
+          script="$GITHUB_WORKSPACE/$BENCHMARK_SOURCE/deploy/write-results.py"
+          if [[ ! -f "$script" ]]; then
+            script="$GITHUB_WORKSPACE/deploy/write-results.py"
+          fi
+          python3 "$script" --level L4 --stages checkout install test build push sbom_source sbom_image scan_source scan_image sign_image verify_image attest_provenance verify_provenance deploy
+
+      - name: Upload benchmark results
+        if: ${{ !cancelled() && steps.timing.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: l4-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.RESULT_DIR }}/results.json
+            ${{ env.RESULT_DIR }}/results.csv
+            ${{ env.RESULT_DIR }}/sbom-source.cdx.json
+            ${{ env.RESULT_DIR }}/sbom-image.cdx.json
+            ${{ env.RESULT_DIR }}/trivy-source.json
+            ${{ env.RESULT_DIR }}/trivy-image.json
+            ${{ env.RESULT_DIR }}/cosign-verify.json
+            ${{ env.RESULT_DIR }}/provenance.json
+            ${{ env.RESULT_DIR }}/provenance-verify.json
+          if-no-files-found: error
+
+      - name: Remove temporary checkout
+        if: ${{ always() && steps.timing.outcome == 'success' }}
+        run: rm -rf -- "$GITHUB_WORKSPACE/${BENCHMARK_SOURCE:?}"
