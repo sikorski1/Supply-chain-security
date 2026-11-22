@@ -79,6 +79,10 @@ def main() -> None:
         cosign_info = json.loads(cosign_version_path.read_text())
         result['cosign_version'] = cosign_info.get('gitVersion')
 
+    opa_version = read_text_if_exists(result_dir / 'opa-version')
+    if opa_version is not None:
+        result['opa_version'] = opa_version
+
     result['status'] = os.environ['BENCHMARK_STATUS']
 
     for stage in args.stages:

@@ -296,6 +296,46 @@ COMPONENT=inventory COMPONENT_DIR=services/inventory \
 bash deploy/verify-provenance.sh "localhost:5001/inventory@sha256:..." /tmp/provenance-verify.json
 ```
 
+## L5 CI/CD benchmark
+
+Run **L5 CI/CD Benchmark** from the repository's **Actions** tab. It builds on L4
+and adds two-layer **OPA/Rego policy enforcement**:
+
+1. **CI/CD pre-deployment gate (`policy_eval`, OPA CLI `v1.22.4`):**
+   `deploy/evaluate-policy.sh` evaluates `security/policies/*.rego` against all
+   L1–L4 artifacts (source/image CycloneDX SBOMs, Trivy reports, verified Cosign
+   signature, verified SLSA Provenance v1.0 attestation) and the rendered
+   Kubernetes Deployment manifest. It blocks deployment on missing/mismatched
+   SBOMs, `CRITICAL` source dependency vulnerabilities, missing/mismatched
+   signatures or SLSA provenance, or non-compliant Kubernetes specs, while
+   auditing image OS `CRITICAL`/`HIGH` vulnerabilities as structured warnings in
+   `opa-policy-result.json`.
+2. **Last-stand Kubernetes admission control (OPA Gatekeeper `v3.23.1`):**
+   Installed once outside timed runs with `bash deploy/setup-gatekeeper.sh`.
+   Applies `security/gatekeeper/` (`K8sBenchmarkSupplyChainPolicy`) to
+   enforce digest-pinned `localhost:5001/` images, `imagePullPolicy: Always`,
+   `readinessProbe`, and non-privileged Pod security at Kubernetes API admission
+   time (exempting `postgres` and `nats` support workloads).
+
+To prevent Gatekeeper from adding webhook latency or blocking mutable tags in
+L0–L4 on the shared `benchmark` namespace, `deploy/setup-gatekeeper.sh` scopes
+Gatekeeper's validating webhook to namespaces labeled
+`supply-chain-benchmark/gatekeeper=enabled`. `deploy/prepare-benchmark.sh`
+removes that label by default (L0–L4) and sets it only when
+`ENABLE_GATEKEEPER=true` (L5).
+
+A successful component artifact contains all L4 artifacts plus
+`opa-policy-result.json` (10 files total). The timing results add `opa_version`
+and `policy_eval_seconds`; Gatekeeper admission latency is captured inside
+`deploy_seconds`.
+
+One-time Gatekeeper bootstrap and local policy unit tests:
+
+```bash
+bash deploy/setup-gatekeeper.sh
+opa test -v security/policies/
+```
+
 ## Service configuration and behavior
 
 | Service | Internal address | Persistence |

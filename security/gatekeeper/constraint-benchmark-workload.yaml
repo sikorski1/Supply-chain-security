@@ -1,0 +1,19 @@
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sBenchmarkSupplyChainPolicy
+metadata:
+  name: benchmark-app-policy
+spec:
+  enforcementAction: deny
+  match:
+    namespaces:
+      - benchmark
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment"]
+      - apiGroups: [""]
+        kinds: ["Pod"]
+  parameters:
+    allowedRegistryPrefix: "localhost:5001/"
+    exemptApps:
+      - postgres
+      - nats

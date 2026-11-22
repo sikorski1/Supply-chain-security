@@ -1,0 +1,98 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sbenchmarksupplychainpolicy
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sBenchmarkSupplyChainPolicy
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            allowedRegistryPrefix:
+              type: string
+            exemptApps:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      code:
+        - engine: Rego
+          source:
+            version: v1
+            rego: |
+              package k8sbenchmarksupplychainpolicy
+
+              is_exempt if {
+                some name in object.get(input.parameters, "exemptApps", [])
+                input.review.object.metadata.name == name
+              }
+
+              is_exempt if {
+                some name in object.get(input.parameters, "exemptApps", [])
+                object.get(object.get(input.review.object.metadata, "labels", {}), "app", "") == name
+              }
+
+              pod_spec := input.review.object.spec.template.spec if {
+                input.review.object.kind == "Deployment"
+              }
+
+              pod_spec := input.review.object.spec if {
+                input.review.object.kind == "Pod"
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                some c in pod_spec.containers
+                not startswith(c.image, input.parameters.allowedRegistryPrefix)
+                msg := sprintf("Container %q image %q must use registry prefix %q", [c.name, c.image, input.parameters.allowedRegistryPrefix])
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                some c in pod_spec.containers
+                not contains(c.image, "@sha256:")
+                msg := sprintf("Container %q image %q must be pinned by @sha256 digest", [c.name, c.image])
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                some c in pod_spec.containers
+                object.get(c, "imagePullPolicy", "") != "Always"
+                msg := sprintf("Container %q must set imagePullPolicy: Always", [c.name])
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                some c in pod_spec.containers
+                not c.readinessProbe
+                msg := sprintf("Container %q must define a readinessProbe", [c.name])
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                some c in pod_spec.containers
+                object.get(object.get(c, "securityContext", {}), "privileged", false) == true
+                msg := sprintf("Container %q must not run privileged", [c.name])
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                object.get(pod_spec, "hostNetwork", false) == true
+                msg := "Workload must not enable hostNetwork"
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                object.get(pod_spec, "hostPID", false) == true
+                msg := "Workload must not enable hostPID"
+              }
+
+              violation contains {"msg": msg} if {
+                not is_exempt
+                object.get(pod_spec, "hostIPC", false) == true
+                msg := "Workload must not enable hostIPC"
+              }
