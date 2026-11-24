@@ -66,7 +66,7 @@ class GitHubClient:
         self.token = token
         self.opener = urllib.request.build_opener(StripAuthOnCrossHostRedirect())
 
-    def _request(self, method: str, url: str, payload: dict | None = None) -> tuple[int, bytes]:
+    def _request(self, method: str, url: str, payload: dict | None = None, max_attempts: int = 5) -> tuple[int, bytes]:
         data = json.dumps(payload).encode('utf-8') if payload is not None else None
         headers = {
             'Accept': 'application/vnd.github+json',
@@ -76,13 +76,38 @@ class GitHubClient:
         }
         if data is not None:
             headers['Content-Type'] = 'application/json'
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        try:
-            with self.opener.open(req, timeout=60) as resp:
-                return resp.status, resp.read()
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode('utf-8', errors='replace')
-            raise RuntimeError(f'GitHub API {method} {url} failed ({exc.code}): {body}') from exc
+
+        retryable_codes = {429, 500, 502, 503, 504}
+        for attempt in range(1, max_attempts + 1):
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            try:
+                with self.opener.open(req, timeout=60) as resp:
+                    return resp.status, resp.read()
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode('utf-8', errors='replace')
+                if exc.code in retryable_codes and attempt < max_attempts:
+                    retry_after = exc.headers.get('Retry-After') if exc.headers else None
+                    delay = int(retry_after) if (retry_after and retry_after.isdigit()) else min(60, 2 ** attempt)
+                    print(
+                        f'  [WARN] GitHub API {method} {url} returned {exc.code} (attempt {attempt}/{max_attempts}); retrying in {delay}s...',
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError(f'GitHub API {method} {url} failed ({exc.code}): {body}') from exc
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+                if attempt < max_attempts:
+                    delay = min(60, 2 ** attempt)
+                    print(
+                        f'  [WARN] Network error on {method} {url}: {exc} (attempt {attempt}/{max_attempts}); retrying in {delay}s...',
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError(f'GitHub API {method} {url} failed after {max_attempts} attempts: {exc}') from exc
+        raise RuntimeError(f'GitHub API {method} {url} exhausted retries')
 
     def api_json(self, method: str, path: str, payload: dict | None = None) -> dict:
         url = f'https://api.github.com{path}'

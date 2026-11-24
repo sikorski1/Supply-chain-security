@@ -4,3 +4,6 @@
 # Private signing keys.
 security/*.key
 cosign.key
+
+# Generated benchmark experiment outputs and raw downloaded artifacts.
+/experiments/results/
