@@ -127,6 +127,9 @@ class GitHubClient:
         _, body = self._request('GET', url)
         return body
 
+    def delete_artifact(self, artifact_id: int) -> None:
+        self.api_json('DELETE', f'/repos/{self.repo}/actions/artifacts/{artifact_id}')
+
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, check=check)
@@ -353,20 +356,32 @@ def dispatch_and_wait(
     raise RuntimeError(f'Timed out after {timeout_minutes}m waiting for run_id={run_id} ({workflow_file}).')
 
 
-def download_run_artifacts(client: GitHubClient, run_id: int, target_dir: Path) -> list[str]:
+def download_run_artifacts(
+    client: GitHubClient,
+    run_id: int,
+    target_dir: Path,
+    delete_remote: bool = False,
+) -> list[str]:
     target_dir.mkdir(parents=True, exist_ok=True)
     artifacts = client.list_run_artifacts(run_id)
     downloaded: list[str] = []
     for art in artifacts:
         if art.get('expired'):
             continue
+        art_id = int(art['id'])
         name = art['name']
         art_dir = target_dir / name
         art_dir.mkdir(parents=True, exist_ok=True)
-        zip_bytes = client.download_artifact_zip(int(art['id']))
+        zip_bytes = client.download_artifact_zip(art_id)
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            members = zf.namelist()
             zf.extractall(art_dir)
         downloaded.append(name)
+        if delete_remote and members:
+            try:
+                client.delete_artifact(art_id)
+            except RuntimeError as exc:
+                print(f'  [WARN] Could not delete remote artifact {name} (id={art_id}): {exc}', file=sys.stderr)
     return sorted(downloaded)
 
 
@@ -382,10 +397,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--experiment-id', default=None, help='Experiment folder name (default: exp-<UTC timestamp>)')
     parser.add_argument('--resume', action='store_true', help='Resume an existing experiment directory (requires --experiment-id)')
     parser.add_argument('--output-dir', default='experiments/results', help='Base output directory (default: experiments/results)')
-    parser.add_argument('--poll-interval', type=int, default=15, help='GitHub API poll interval in seconds (default: 15)')
+    parser.add_argument('--poll-interval', type=int, default=5, help='GitHub API poll interval in seconds (default: 5)')
     parser.add_argument('--timeout-minutes', type=int, default=45, help='Max wait per workflow run in minutes (default: 45)')
-    parser.add_argument('--pause-seconds', type=int, default=5, help='Cooldown pause between workflow runs in seconds (default: 5)')
+    parser.add_argument('--pause-seconds', type=int, default=1, help='Cooldown pause between workflow runs in seconds (default: 1)')
     parser.add_argument('--continue-on-failure', action='store_true', help='Keep running remaining steps if a workflow run fails')
+    parser.add_argument('--delete-remote-artifacts', action='store_true', help='Delete each GitHub Actions artifact after downloading and extracting it locally (prevents hitting the 500 MB free-tier quota on long runs)')
     parser.add_argument('--allow-dirty', action='store_true', help='Allow uncommitted local changes or unpushed HEAD')
     parser.add_argument('--skip-preflight', action='store_true', help='Skip local host/cluster pre-flight checks')
     parser.add_argument('--skip-analyze', action='store_true', help='Do not automatically run analyze-results.py after completion')
@@ -429,6 +445,7 @@ def main() -> None:
             'warmup_level': warmup_level,
             'order': args.order,
             'seed': args.seed if args.order == 'random' else None,
+            'delete_remote_artifacts': args.delete_remote_artifacts,
             'host': collect_host_metadata(repo_dir, args.ref),
             'preflight_warnings': warnings,
             'steps': schedule,
@@ -470,7 +487,7 @@ def main() -> None:
         step['conclusion'] = conclusion
 
         raw_dir = exp_dir / 'raw' / f'{step["step_index"]:03d}-{tag}-run-{run_id}'
-        downloaded = download_run_artifacts(client, run_id, raw_dir)
+        downloaded = download_run_artifacts(client, run_id, raw_dir, delete_remote=args.delete_remote_artifacts)
         step['artifacts_dir'] = str(raw_dir.relative_to(exp_dir))
         step['artifacts'] = downloaded
         step['status'] = 'completed' if conclusion == 'success' else 'failed'

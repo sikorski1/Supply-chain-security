@@ -107,7 +107,19 @@ jobs:
         with:
           syft-version: 'v1.57.1'
 
+      - name: Check cached Trivy
+        id: trivy_cache
+        run: |
+          trivy_dir="$HOME/.local/bin/trivy-bin"
+          if [[ -x "$trivy_dir/trivy" ]] && [[ "$("$trivy_dir/trivy" --version 2>/dev/null | awk '$1 == "Version:" { print $2; exit }')" == "0.76.2" ]]; then
+            echo "$trivy_dir" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Trivy
+        if: steps.trivy_cache.outputs.hit != 'true'
         uses: aquasecurity/setup-trivy@v0.3.1
         with:
           version: 'v0.76.2'

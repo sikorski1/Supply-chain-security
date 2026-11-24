@@ -23,13 +23,13 @@ reproducible, interleaved benchmark experiments across security levels L0–L5.
 Preview the schedule and run pre-flight checks without dispatching anything:
 
 ```bash
-python3 experiments/scripts/run-benchmark.py --repetitions 10 --dry-run
+python3 experiments/scripts/run-benchmark.py --repetitions 24 --delete-remote-artifacts --dry-run
 ```
 
-Run an interleaved 10-round experiment (1 untimed `L5` warm-up pass + 10 rotated rounds of `L0`–`L5`, 61 workflow runs total):
+Run an interleaved 24-round experiment (1 untimed `L5` warm-up pass + 24 rotated rounds = 4 balanced cycles of `L0`–`L5`, 145 workflow runs total):
 
 ```bash
-python3 experiments/scripts/run-benchmark.py --repetitions 10
+python3 experiments/scripts/run-benchmark.py --repetitions 24 --delete-remote-artifacts
 ```
 
 Useful options:
@@ -40,6 +40,7 @@ Useful options:
 * `--warmup-level L5|none` — untimed warm-up pass before Round 1 (default: `L5`, excluded from statistics).
 * `--experiment-id <id> --resume` — resume an interrupted experiment from its saved `manifest.json`.
 * `--continue-on-failure` — keep running remaining rounds if a single workflow fails.
+* `--delete-remote-artifacts` — delete each GitHub Actions artifact after it is downloaded and extracted locally (recommended for `--repetitions 30` to avoid GitHub Free's 500 MB artifact storage quota).
 
 ## Re-running Analysis Standalone
 
