@@ -77,7 +77,9 @@ class GitHubClient:
         if data is not None:
             headers['Content-Type'] = 'application/json'
 
-        retryable_codes = {429, 500, 502, 503, 504}
+        # GitHub's fine-grained PAT edge occasionally returns spurious 401s on valid tokens;
+        # retrying recovers automatically while truly expired/bad tokens still fail after retries.
+        retryable_codes = {401, 429, 500, 502, 503, 504}
         for attempt in range(1, max_attempts + 1):
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             try:
@@ -497,19 +499,25 @@ def main() -> None:
 
         tag = 'warmup' if step['phase'] == 'warmup' else f'round-{step["round"]:02d}-{step["level"].lower()}'
         print(f'\n==> [{step["step_index"] + 1}/{total_steps}] Running {tag} ({step["workflow"]})', flush=True)
-        step['status'] = 'running'
-        step['dispatched_at_utc'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        save_manifest(manifest_path, manifest)
+        if step.get('run_id') and step.get('conclusion') == 'success':
+            run_id = int(step['run_id'])
+            conclusion = 'success'
+            print(f'  Reusing completed run_id={run_id}; downloading artifacts...', flush=True)
+        else:
+            step['status'] = 'running'
+            step['dispatched_at_utc'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            save_manifest(manifest_path, manifest)
 
-        run = dispatch_and_wait(client, step['workflow'], args.ref, args.poll_interval, args.timeout_minutes)
-        run_id = int(run['id'])
-        conclusion = run.get('conclusion')
-        step['run_id'] = run_id
-        step['html_url'] = run.get('html_url')
-        step['head_sha'] = run.get('head_sha')
-        step['run_started_at'] = run.get('run_started_at')
-        step['updated_at'] = run.get('updated_at')
-        step['conclusion'] = conclusion
+            run = dispatch_and_wait(client, step['workflow'], args.ref, args.poll_interval, args.timeout_minutes)
+            run_id = int(run['id'])
+            conclusion = run.get('conclusion')
+            step['run_id'] = run_id
+            step['html_url'] = run.get('html_url')
+            step['head_sha'] = run.get('head_sha')
+            step['run_started_at'] = run.get('run_started_at')
+            step['updated_at'] = run.get('updated_at')
+            step['conclusion'] = conclusion
+            save_manifest(manifest_path, manifest)
 
         raw_dir = exp_dir / 'raw' / f'{step["step_index"]:03d}-{tag}-run-{run_id}'
         downloaded = download_run_artifacts(client, run_id, raw_dir, delete_remote=args.delete_remote_artifacts)
@@ -520,7 +528,7 @@ def main() -> None:
 
         print(f'  Finished run_id={run_id} conclusion={conclusion} artifacts={len(downloaded)}/{len(EXPECTED_COMPONENTS)}', flush=True)
         if conclusion != 'success':
-            print(f'  [ERROR] Workflow run failed: {run.get("html_url")}', file=sys.stderr)
+            print(f'  [ERROR] Workflow run failed: {step.get("html_url")}', file=sys.stderr)
             if not args.continue_on_failure:
                 print(f'  Stopping early. Fix the issue and resume with: --experiment-id {exp_id} --resume', file=sys.stderr)
                 sys.exit(1)
